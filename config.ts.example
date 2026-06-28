@@ -1,0 +1,18 @@
+import { ConfigProvider } from "./types/ConfigProvider.ts"
+
+export const config: ConfigProvider = {
+    db_url: "mongodb://username:password@localhost:27017/?retryWrites=true",
+    db_name: 'mornheisland',
+    port: 7000,
+    log_path: './log',
+    router_dir: './router',
+    jwt: {
+        secret: 'replace-me-with-a-random-string',
+        algorithms: ['HS256']
+    },
+    session_secret: 'replace-me-with-another-random-string',
+    sso: {
+        client_id: 'your-sso-client-id',
+        client_secret: 'your-sso-client-secret',
+    }
+}
