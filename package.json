@@ -9,8 +9,9 @@
     "start": "tsx server.ts",
     "build": "tsc -w"
   },
-  "author": "heycrab3",
-  "license": "ISC",
+  "license": "AGPL-3.0-only",
+  "repository": "https://github.com/HeyCrab3/MornheIsland",
+  "author": "HeyCrab3",
   "dependencies": {
     "@logto/js": "^6.1.0",
     "@minecraft-js/rcon": "^1.1.0",
