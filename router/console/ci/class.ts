@@ -83,7 +83,7 @@ async function populateResources(db: any, cls: any) {
       if (!refId) { populated[field] = null; return; }
       const doc = await db.collection(collMap[field]).findOne({ _id: refId });
       populated[field] = doc
-        ? { _id: doc._id, name: doc.name, version: doc.version, data: doc.data }
+        ? { _id: String(doc._id), name: doc.name, version: doc.version }
         : null;
     }),
   );

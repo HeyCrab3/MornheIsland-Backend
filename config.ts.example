@@ -14,5 +14,11 @@ export const config: ConfigProvider = {
     sso: {
         client_id: 'your-sso-client-id',
         client_secret: 'your-sso-client-secret',
-    }
+    },
+    stcn: {
+        endpoint: 'https://auth.smart-teach.cn',
+        client_id: 'your-stcn-client-id',
+        client_secret: 'your-stcn-client-secret',
+        application: 'your-app-name',
+    },
 }

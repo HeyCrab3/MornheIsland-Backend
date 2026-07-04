@@ -102,17 +102,21 @@ app.use((req, res, next) => {
     const db = client.db(config.db_name)
     const req_uuid = uuid()
     const collection = db.collection("request_log")
+    // 获取用户真实IP地址以避免Docker中错误取到虚拟子网IP
+    const client_real_ip = req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.connection.remoteAddress || req.ip;
     collection.insertOne({
-        ip: req.ip,
+        ip: client_real_ip,
         url: req.originalUrl,
         path: req.path,
         method: req.method,
         uuid: req_uuid,
+        // 增加一个取UA
+        user_agent: req.headers['user-agent'] || '',
         time: new Date().toLocaleString(),
         ts: new Date().getTime()
     })
     res.header('X-CrabCity-Request-ID', req_uuid)
-    log(`${req.ip} => (${req.protocol}) ${req.originalUrl} (干净路径 ${req.path}) (${req.method}) 请求ID ${req_uuid}`, 'info', 'access');
+    log(`${client_real_ip} => (${req.protocol}) ${req.originalUrl} (干净路径 ${req.path}) (${req.method}) 请求ID ${req_uuid}`, 'info', 'access');
     next();
 });
 

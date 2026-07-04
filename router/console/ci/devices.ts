@@ -1,5 +1,6 @@
 import express from "express";
 import { log } from "../../../util/log";
+import { ObjectId } from "mongodb";
 
 const router = express.Router();
 
@@ -15,21 +16,25 @@ router.get("/v1/console/ci/devices", async (req, res) => {
 
     // 查出当前用户的所有班级 identity，用于匹配请求路径
     const classes = await db.collection("ci_classes")
-      .find({ userId: userId })
-      .project({ identity: 1 })
+      .find({ userId: new ObjectId(userId) })
+      .project({ _id: 1 })
       .toArray();
-    const identities = classes.map((c: any) => c.identity);
+    const classIds = classes.map((c: any) => String(c._id));
 
-    if (identities.length === 0) {
+    if (classIds.length === 0) {
       return res.json({ code: 0, msg: "ok", data: [] });
     }
+
+    // 同时兼容旧 identity 和新 ObjectId 路径
+    const identityIds = classes.map((c: any) => c.identity).filter(Boolean);
+    const allIds = [...classIds, ...identityIds];
 
     // 从请求日志中找出访问过这些班级 CI 端点的设备
     const devices = await db.collection("request_log").aggregate([
       {
         $match: {
           path: {
-            $in: identities.flatMap((id: string) => [
+            $in: allIds.flatMap((id: string) => [
               `/v1/ci/${id}/manifest.json`,
               `/v1/ci/${id}/classplan.json`,
               `/v1/ci/${id}/timelayout.json`,

@@ -25,9 +25,20 @@ export interface ConfigProvider {
     session_secret: string,
     /** SSO 单点登录配置 */
     sso?: {
+        /** OAuth client_id (CrabCity) */
+        client_id: string,
+        /** OAuth client_secret (CrabCity) */
+        client_secret: string,
+    },
+    /** STCN 单点登录配置 */
+    stcn?: {
+        /** OAuth endpoint */
+        endpoint: string,
         /** OAuth client_id */
         client_id: string,
         /** OAuth client_secret */
         client_secret: string,
+        /** 应用标识 */
+        application: string,
     }
 }
