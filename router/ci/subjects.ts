@@ -15,12 +15,12 @@ router.get("/v1/ci/:classIdentity/subjects.json", async (req, res) => {
       const cp = await db.collection("ci_classplans").findOne({ _id: new ObjectId(cls.classplanId) });
       if (cp?.data?.subjectsId) {
         const sub = await db.collection("ci_subjects").findOne({ _id: new ObjectId(cp.data.subjectsId) });
-        if (sub) return res.json(sub.data);
+        if (sub) return res.json({ Name: "", TimeLayouts: {}, ClassPlans: {}, Subjects: sub.data });
       }
     }
     if (cls.subjectsId) {
       const doc = await db.collection("ci_subjects").findOne({ _id: new ObjectId(cls.subjectsId) });
-      if (doc) return res.json(doc.data);
+      if (doc) return res.json({ Name: "", TimeLayouts: {}, ClassPlans: {}, Subjects: doc.data });
     }
     res.status(404).json({ code: 404, msg: "未配置科目" });
   } catch (e) {

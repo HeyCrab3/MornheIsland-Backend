@@ -21,4 +21,16 @@ export const config: ConfigProvider = {
         client_secret: 'your-stcn-client-secret',
         application: 'your-app-name',
     },
+    tcloud: {
+        secretId: 'your-secret-id',
+        secretKey: 'your-secret-key'
+    },
+    llm: {
+        endpoint: 'https://your-endpoint-url.com',
+        apiKey: 'your-api-key',
+        model: 'your-model-name',
+        extraParams: {
+            // OpenAI SDK 的其他客户端非必须参数...
+        }
+    }
 }

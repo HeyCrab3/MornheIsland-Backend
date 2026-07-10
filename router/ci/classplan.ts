@@ -14,7 +14,7 @@ router.get("/v1/ci/:classIdentity/classplan.json", async (req, res) => {
 
     const cp = await db.collection("ci_classplans").findOne({ _id: new ObjectId(cls.classplanId) });
     if (!cp) return res.status(404).json({ code: 404, msg: "课表不存在" });
-    res.json(cp.data.classPlans || cp.data);
+    res.json({ Name: "", TimeLayouts: {}, ClassPlans: cp.data.classPlans || cp.data, Subjects: {} });
   } catch (e) {
     log(`[ci/classplan] ${e}`, "error");
     res.status(500).json({ code: 500, msg: "内部服务器错误" });

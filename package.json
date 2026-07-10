@@ -28,6 +28,7 @@
     "log4js": "^6.9.1",
     "minio": "^8.0.6",
     "mongodb": "^6.9.0",
+    "openai": "^6.46.0",
     "path-to-regexp": "6.2.1",
     "superagent": "^10.2.3",
     "tencentcloud-sdk-nodejs": "^4.0.977",

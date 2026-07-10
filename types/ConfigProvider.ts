@@ -1,5 +1,7 @@
 // 配置类
 
+import type { ClientOptions } from 'openai'
+
 export interface ConfigProvider {
     /**
      * 配置类
@@ -40,5 +42,25 @@ export interface ConfigProvider {
         client_secret: string,
         /** 应用标识 */
         application: string,
+    }
+    /** 腾讯云 SecretID / SecretKey（作息时间表、课程表OCR自动识别） */
+    tcloud?: {
+        /** SecretID */
+        /**@see https://console.cloud.tencent.com/cam/capi */
+        secretId: string,
+        /** SecretKey */
+        /**@see https://console.cloud.tencent.com/cam/capi */
+        secretKey: string,
+    },
+    /** 大模型服务（OCR后处理） */
+    llm?: {
+        /** 服务地址（API Endpoint） */
+        endpoint: string,
+        /** API Key（请联系你的服务商获取） */
+        apiKey: string,
+        /** 模型名称（请联系你的服务商获取） */
+        model: string,
+        /** 附加参数（会在OpenAI SDK初始化时候被添加到参数末尾） */
+        extraParams?: ClientOptions
     }
 }

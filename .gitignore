@@ -4,3 +4,4 @@ dist/
 config.ts
 .env
 *.log
+yarn.lock

@@ -77,6 +77,9 @@ async function populateResources(db: any, cls: any) {
   };
 
   const populated: any = { ...cls };
+  // 把 ObjectId 转成字符串，防止序列化成 {"$oid":"..."}
+  populated._id = String(populated._id);
+  populated.userId = String(populated.userId);
   await Promise.all(
     refFields.map(async (field) => {
       const refId = (cls as any)[field];
@@ -84,7 +87,7 @@ async function populateResources(db: any, cls: any) {
       const doc = await db.collection(collMap[field]).findOne({ _id: refId });
       populated[field] = doc
         ? { _id: String(doc._id), name: doc.name, version: doc.version }
-        : null;
+        : String(refId);
     }),
   );
   return populated;
