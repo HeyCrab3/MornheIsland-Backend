@@ -59,6 +59,10 @@ router.post("/v1/console/ci/import/ces", async (req, res) => {
     // ── 过滤临时层 ──
     const schedules = ces.schedules.filter((s: CesSchedule) => !s.name.includes("临时"));
 
+    // 两周轮换周期固定为 2（对应 ClassIsland 的 WeekCountDivTotal；
+    // 纯「每周(all)」的课表同样为 2，WeekCountDiv=0 表示每周生效）
+    const totalWeeks = 2;
+
     // ── 1. 生成科目（ClassIsland UUID 格式） ──
     const subjectsData: Record<string, any> = {};
     const subjectUuidMap = new Map<string, string>();
@@ -94,10 +98,22 @@ router.post("/v1/console/ci/import/ces", async (req, res) => {
     });
 
     const tlUuid = generateUUID();
+
+    // 生成 ClassIsland 格式的 Layouts（上课段 + 自动插入课间），而非 TimePoints
+    const layouts: any[] = [];
+    for (let i = 0; i < timePoints.length; i++) {
+      const tp = timePoints[i];
+      const prevEnd = i > 0 ? timePoints[i - 1].End : "";
+      if (prevEnd && tp.Start && prevEnd !== tp.Start) {
+        layouts.push({ StartSecond: "", EndSecond: "", StartTime: prevEnd, EndTime: tp.Start, TimeType: 1, IsHideDefault: false, DefaultClassId: "00000000-0000-0000-0000-000000000000", BreakName: "", ActionSet: null, AttachedObjects: {}, IsActive: false });
+      }
+      layouts.push({ StartSecond: "", EndSecond: "", StartTime: tp.Start, EndTime: tp.End, TimeType: 0, TimePointName: tp.TimePointName, IsHideDefault: false, DefaultClassId: "00000000-0000-0000-0000-000000000000", BreakName: "", ActionSet: null, AttachedObjects: {}, IsActive: false });
+    }
+
     const timelayoutData: Record<string, any> = {
       [tlUuid]: {
         Name: `${name || "导入课表"} 时间表`,
-        TimePoints: timePoints,
+        Layouts: layouts,
       },
     };
 
@@ -118,19 +134,27 @@ router.post("/v1/console/ci/import/ces", async (req, res) => {
         );
         if (match) {
           const subUuid = resolveSubjectUuid(match.subject, subjectUuidMap, subjectsData);
-          classes.push(subUuid ? { SubjectId: subUuid } : null);
+          classes.push(subUuid
+            ? { SubjectId: subUuid, IsChangedClass: false, IsEnabled: true, AttachedObjects: {}, IsActive: false }
+            : { SubjectId: null, IsChangedClass: false, IsEnabled: false, AttachedObjects: {}, IsActive: false }
+          );
         } else {
-          classes.push(null);
+          classes.push({ SubjectId: null, IsChangedClass: false, IsEnabled: false, AttachedObjects: {}, IsActive: false });
         }
       }
 
       classPlans[cpUuid] = {
         TimeLayoutId: tlUuid,
-        TimeRule: { WeekDay: wd, WeekCountDiv: wcd },
+        TimeRule: { WeekDay: wd, WeekCountDiv: wcd, WeekCountDivTotal: totalWeeks, IsActive: false },
         Classes: classes,
         Name: sched.name,
         IsOverlay: false,
+        OverlaySourceId: null,
+        OverlaySetupTime: new Date().toISOString(),
         IsEnabled: true,
+        AssociatedGroup: "00000000-0000-0000-0000-000000000000",
+        AttachedObjects: {},
+        IsActive: false,
       };
     }
 

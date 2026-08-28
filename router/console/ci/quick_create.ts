@@ -133,8 +133,10 @@ router.post("/v1/console/ci/quick-create", async (req, res) => {
         classPlans[cpUuid] = {
           TimeLayoutId: tlUuid,
           TimeRule: {
-            WeekDay: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].indexOf(day) + 1,
+            WeekDay: { "周一": 1, "周二": 2, "周三": 3, "周四": 4, "周五": 5, "周六": 6, "周日": 0 }[day] ?? 0,
             WeekCountDiv: 0,
+            WeekCountDivTotal: 2,
+            IsActive: false,
           },
           Classes: slots.map((s: any) => s?.subject
             ? { SubjectId: s.subject, IsChangedClass: false, IsEnabled: true, AttachedObjects: {}, IsActive: false }
