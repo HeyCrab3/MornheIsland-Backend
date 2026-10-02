@@ -53,6 +53,22 @@ function checkProtocol(call: any): { ok: boolean; cuid: string; session: string 
 }
 
 /**
+ * 用指定 gRPC 状态终止服务端流。
+ *
+ * 这里**不能用 call.destroy()**：grpc-js 的 ServerDuplexStream 是在 'error' 事件里
+ * 记录 pendingStatus、再调 end() 触发 _final → sendStatus 的；
+ * 而 destroy() 之后流已销毁，end() 不再走 _final，状态就永远发不出去——
+ * 客户端既收不到 error 也收不到 end，只会一直挂着（写心跳也不抛错），
+ * 于是永远不会触发它自带的 30 秒重连。必须 emit('error') 才能让对端感知。
+ */
+function abortStream(call: any, code: number, details: string): void {
+  const err: any = new Error(details);
+  err.code = code;
+  err.details = details;
+  call.emit("error", err);
+}
+
+/**
  * 把客户端注册信息持久化到 MongoDB（cuid ↔ 班级标识 identity）。
  * 客户端注册时还会带着 cuid，HTTP manifest 端点靠它反查班级。
  */
@@ -156,14 +172,31 @@ const commandDeliverImpl = {
   ListenCommand: (call: any) => {
     const { ok, cuid, session } = checkProtocol(call);
     if (!ok || !cuid) {
-      call.destroy(new Error("invalid protocol"));
+      abortStream(call, grpc.status.INVALID_ARGUMENT, "invalid protocol");
       return;
     }
     if (!validateSession(cuid, session)) {
-      log(`[grpc] 命令流会话校验未通过（放行以便联调） ${cuid}`, "error", "grpc");
+      // 以前这里只记日志不拦截（“放行以便联调”），端口挂到公网后必须收紧：
+      // 放行意味着任何人都能对任意 cuid 建命令流，并顶掉真设备的那一条。
+      log(
+        `[grpc] 拒绝建立命令流 ${cuid}：会话校验未通过（${session ? "session 不匹配" : "未携带 session"}）`,
+        "warn",
+        "grpc",
+      );
+      abortStream(call, grpc.status.PERMISSION_DENIED, "invalid session");
+      return;
     }
-    const entry = attachStream(cuid, call);
+
+    const { entry, previous } = attachStream(cuid, call);
     log(`[grpc] 客户端建立命令流 ${cuid}`, "info", "grpc");
+
+    // 同一 cuid 出现两条流，多半是网络抖动留下的半死连接一直以为自己还在线。
+    // 旧的必须显式关掉：覆盖式绑定会让它静默失效，真设备从此收不到指令也无从察觉。
+    if (previous) {
+      log(`[grpc] ${cuid} 已有旧命令流，正在关闭，避免两条流互相顶替`, "warn", "grpc");
+      // 同样必须走 abortStream：destroy() 不会把状态发给对端，旧连接会一直以为自己还在线
+      abortStream(previous, grpc.status.ABORTED, "replaced by a newer command stream");
+    }
 
     // 重连的客户端不会再 Register，内存条目可能只有 cuid：
     // 反查 ci_clients 补齐 identity/mac，否则命令流会挂在一个空条目上。
@@ -239,7 +272,7 @@ export async function startGrpcServer(): Promise<void> {
   server.addService(services.Audit.service, auditImpl);
   server.addService(services.ConfigUpload.service, configUploadImpl);
 
-  const port = (config as any).grpc_port ?? 20722;
+  const port = config.grpc_port ?? 20722;
 
   await new Promise<void>((resolve, reject) => {
     server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (err, boundPort) => {
@@ -255,6 +288,16 @@ export async function startGrpcServer(): Promise<void> {
 export function stopGrpcServer(): void {
   grpcServer?.forceShutdown();
   grpcServer = null;
+}
+
+/** gRPC 服务器是否已在监听（用于控制台自检，不代表外网可达） */
+export function isGrpcListening(): boolean {
+  return grpcServer !== null;
+}
+
+/** 实际使用的 gRPC 端口 */
+export function getGrpcPort(): number {
+  return config.grpc_port ?? 20722;
 }
 
 // ── 命令推送接口（供 REST 路由调用）──

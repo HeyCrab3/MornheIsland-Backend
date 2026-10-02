@@ -25,6 +25,19 @@ export const config: ConfigProvider = {
         secretId: 'your-secret-id',
         secretKey: 'your-secret-key'
     },
+    // ── 部署相关 ────────────────────────────────────────────────
+    // 引导插件（莫宁岛集控扩展）下载地址。每台机器要先手动装一次它，之后才收得到插件分发指令。
+    bootstrap_plugin_url: 'https://your-cdn.example.com/MornheIsland.CiPlugin.cipx',
+    // 客户端访问本服务的对外地址，用于拼接插件下载地址（本机托管的那类插件）。
+    // 留空时按请求推断（控制台传 window.location.origin）。
+    public_base_url: 'https://ci.example.com',
+    // 集控 gRPC 监听端口（h2c 明文）。默认 20722。
+    grpc_port: 20722,
+    // 下发给客户端的 gRPC 地址，会写进 ManagementPreset 的 ManagementServerGrpc。
+    // 留空时前端按「控制台域名:grpc_port」推断——只在客户端能直连该端口时成立。
+    //   · 直连端口：'http://ci.example.com:20722'（需放行 20722，且域名能解析）
+    //   · nginx 走 TLS：'https://ci.example.com'（nginx 配 grpc_pass grpc://127.0.0.1:20722）
+    public_grpc_address: '',
     llm: {
         endpoint: 'https://your-endpoint-url.com',
         apiKey: 'your-api-key',

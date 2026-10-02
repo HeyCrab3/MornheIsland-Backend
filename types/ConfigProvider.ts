@@ -56,6 +56,14 @@ export interface ConfigProvider {
     bootstrap_plugin_url?: string,
     /** 客户端访问本服务的对外地址（如 https://ci.example.com），用于拼接插件下载地址；留空则按请求推断 */
     public_base_url?: string,
+    /** 集控 gRPC 服务器监听端口，默认 20722（h2c 明文，客户端直连该端口） */
+    grpc_port?: number,
+    /**
+     * 下发给客户端的 gRPC 地址，写进 ManagementPreset 的 ManagementServerGrpc。
+     * 留空时前端按「控制台域名 + grpc_port」推断，这在只开放 443 或走了 gRPC 反向代理的环境下是错的，需显式配置。
+     * 例：直连端口填 http://ci.example.com:20722；经 nginx 走 TLS 填 https://ci.example.com
+     */
+    public_grpc_address?: string,
     /** 大模型服务（OCR后处理） */
     llm?: {
         /** 服务地址（API Endpoint） */

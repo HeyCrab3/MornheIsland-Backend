@@ -5,14 +5,39 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 import { listClients, clients, isOnline } from "../../../grpc/clients";
-import { sendNotification, sendDataUpdated, sendRestartApp } from "../../../grpc/server";
+import { sendNotification, sendDataUpdated, sendRestartApp, isGrpcListening, getGrpcPort } from "../../../grpc/server";
 import { log } from "../../../util/log";
+import { config } from "../../../config";
 
 const router = express.Router();
 
 function getUserId(req: any): string | null {
   return req.auth?.userId || null;
 }
+
+/**
+ * GET /v1/console/ci/grpc/endpoint — 下发给客户端的 gRPC 地址与服务器自检信息
+ *
+ * configured 为空表示没在 config.public_grpc_address 里显式配置，
+ * 前端会退回「控制台域名 + port」推断——那只在客户端能直连该端口时成立。
+ * 注意这里不推断主机名：后端经过反代，看到的 Host 是内网地址，推不出对外域名。
+ */
+router.get("/v1/console/ci/grpc/endpoint", (req, res) => {
+  if (!getUserId(req)) return res.status(401).json({ code: 401, msg: "请先登录" });
+
+  const configured = String(config.public_grpc_address || "").trim().replace(/\/+$/, "");
+  res.json({
+    code: 0,
+    msg: "ok",
+    data: {
+      listening: isGrpcListening(),
+      port: getGrpcPort(),
+      configured,
+      isConfigured: !!configured,
+      managedServerKind: 1,
+    },
+  });
+});
 
 /** GET /v1/console/ci/grpc/clients — 已注册的 gRPC 客户端 */
 router.get("/v1/console/ci/grpc/clients", (req, res) => {

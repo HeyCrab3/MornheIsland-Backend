@@ -35,16 +35,21 @@ export function removeClient(cuid: string): void {
  * 绑定 ListenCommand 响应流。
  * 客户端重连只做握手 + 建流、不会再调用 Register，内存里可能还没有条目，
  * 所以这里必须能自建条目；否则流会被静默丢弃，设备永远显示离线。
+ *
+ * 返回被替换掉的旧流（如果有），交给调用方决定怎么处理——
+ * 同一条 cuid 出现两条流通常是网络抖动留下的半死连接，直接覆盖会让旧连接
+ * 一直以为自己还在线，所以调用方应当显式关掉它。
  */
-export function attachStream(cuid: string, stream: any): ClientEntry {
+export function attachStream(cuid: string, stream: any): { entry: ClientEntry; previous?: any } {
   let c = clients.get(cuid);
   if (!c) {
     c = { cuid, clientId: "", mac: "", lastSeen: Date.now(), registeredAt: Date.now() };
     clients.set(cuid, c);
   }
+  const previous = c.stream;
   c.stream = stream;
   c.lastSeen = Date.now();
-  return c;
+  return { entry: c, previous };
 }
 
 /**
