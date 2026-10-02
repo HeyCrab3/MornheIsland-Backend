@@ -6,18 +6,19 @@ import express from 'express'
 import process, { exit } from 'node:process';
 import { expressjwt } from 'express-jwt'
 import { client } from './util/db';
-import chokidar from 'chokidar';
 import { routerWhiteList } from './middleware/router_whitelist';
 import * as fs from 'fs'
 import path from 'node:path';
 import { resolve } from 'path';
-import { spawn } from 'node:child_process';
 import { uuid } from './util/uuid'
 import session from 'express-session';
+import { startGrpcServer, stopGrpcServer } from './grpc/server';
+import { backfillPluginIds } from './util/plugin_migrate';
 
 const app = express()
 
-app.use(express.json())
+// 放宽 body 限制：快速创建等接口会上传图片 base64（默认 100kb 会触发 PayloadTooLargeError）
+app.use(express.json({ limit: '50mb' }))
 
 // 设置路由目录
 const routerDir = config.router_dir;
@@ -37,14 +38,8 @@ async function connectDB() {
 // 初始化数据库连接
 connectDB();
 
-// 监听路由文件变化并重新加载路由
-const watcher = chokidar.watch(routerDir);
-watcher.on('change', async (path) => {
-    log(`检测到对路由 ${path} 的更改，正在重启...`);
-    const script = process.argv[1];
-    loadRoutes(routerDir)
-});
-
+// 热重载交给 `tsx watch`（见 package.json 的 dev 脚本）：
+// 文件变化时整进程重启，路由在启动时重新加载，避免旧路由残留。
 async function loadRoutes(routerDir) {
     try {
         // 遍历每个子目录
@@ -168,17 +163,27 @@ const server = app.listen(config.port, () => {
     log('服务器正在运行在端口 ' + config.port);
 });
 
+// 启动 gRPC 集控服务器（ClassIsland 客户端实时指令通道）
+startGrpcServer().catch((e) => {
+    log('无法启动 gRPC 集控服务器：' + e, 'error');
+});
+
+// 补齐历史插件缺失的 pluginId（插件对账依赖它）
+backfillPluginIds();
+
 // 退出处理
 process.on('exit', (code) => {
     log(`程序以错误码 ${code} 退出`);
 });
 
-// 当关闭服务器时，停止监听文件更改
-process.on('SIGINT', () => {
-    watcher.close();
+// 优雅关闭（Ctrl+C 或 tsx watch 重启发送的 SIGTERM）
+function shutdown() {
     server.close();
+    stopGrpcServer();
     log('服务器已关闭');
     process.exit(0);
-});
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 export { server }

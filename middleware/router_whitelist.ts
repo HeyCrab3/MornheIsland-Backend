@@ -11,6 +11,7 @@ const routerWhiteList = [
   '/',
   /^\/assets\/.*/,
   /^\/v1\/ci\/.*/,              // ClassIsland 集控公开端点（客户端无需 JWT）
+  /^\/v1\/client\/.*/,          // gRPC 集控模式的清单端点（客户端无需 JWT）
 ];
 
 // 递归扫描路由目录并添加到白名单列表中

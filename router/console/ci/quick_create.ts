@@ -64,6 +64,11 @@ router.post("/v1/console/ci/quick-create", async (req, res) => {
     log(`[quick-create] 用户 ${userId} 开始 OCR 识别`, "info", "auth");
     const ocrResult = await getOcrResult(imageBase64);
     const ocrText = ocrResult?.TextDetections?.map((d: any) => d.DetectedText).join("\n") || "";
+    // 每个文字块的内容 + 四顶点坐标（用于前端在原图上绘制标注框）
+    const ocrBlocks = (ocrResult?.TextDetections || []).map((d: any) => ({
+      text: d.DetectedText,
+      polygon: d.Polygon || [],
+    }));
 
     if (!ocrText.trim()) {
       return res.status(422).json({ code: 422, msg: "图片中未识别到文字，请检查图片清晰度" });
@@ -155,7 +160,7 @@ router.post("/v1/console/ci/quick-create", async (req, res) => {
       parsed.data = { classPlans };
     }
 
-    res.json({ code: 0, data: { ...parsed, ocrText, resourceType } });
+    res.json({ code: 0, data: { ...parsed, ocrText, ocrBlocks, resourceType } });
   } catch (e: any) {
     log(`[quick-create] ${e}`, "error");
     res.status(500).json({ code: 500, msg: "处理失败: " + (e.message || e) });

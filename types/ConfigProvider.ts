@@ -52,6 +52,10 @@ export interface ConfigProvider {
         /**@see https://console.cloud.tencent.com/cam/capi */
         secretKey: string,
     },
+    /** 引导插件（莫宁岛集控扩展）下载地址，插件页可覆盖 */
+    bootstrap_plugin_url?: string,
+    /** 客户端访问本服务的对外地址（如 https://ci.example.com），用于拼接插件下载地址；留空则按请求推断 */
+    public_base_url?: string,
     /** 大模型服务（OCR后处理） */
     llm?: {
         /** 服务地址（API Endpoint） */

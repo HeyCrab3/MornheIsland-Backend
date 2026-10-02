@@ -6,6 +6,7 @@
   "main": "index.ts",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "tsx watch server.ts",
     "start": "tsx server.ts",
     "build": "tsc -w"
   },
@@ -13,10 +14,14 @@
   "repository": "https://github.com/HeyCrab3/MornheIsland",
   "author": "HeyCrab3",
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1",
     "@logto/js": "^6.1.0",
     "@minecraft-js/rcon": "^1.1.0",
+    "@types/adm-zip": "^0.5.8",
     "@types/express": "^5.0.0",
     "@types/express-session": "^1.18.2",
+    "adm-zip": "^0.6.1",
     "axios": "^1.7.7",
     "chokidar": "^4.0.1",
     "cos-nodejs-sdk-v5": "^2.14.6",
@@ -29,6 +34,7 @@
     "minio": "^8.0.6",
     "mongodb": "^6.9.0",
     "openai": "^6.46.0",
+    "openpgp": "^6.3.2",
     "path-to-regexp": "6.2.1",
     "superagent": "^10.2.3",
     "tencentcloud-sdk-nodejs": "^4.0.977",
