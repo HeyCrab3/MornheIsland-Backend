@@ -136,6 +136,27 @@ request_log        # 请求日志（用于设备追踪）
 - `session_secret` — Express Session 密钥
 - `sso.client_id` / `sso.client_secret` — CrabCity OAuth 凭证
 
+### 集控 gRPC
+
+客户端用 ClassIsland 的集控模式长连接本服务，默认监听 `20722`（`grpc_port`）。
+下发给客户端的地址由 `public_grpc_address` 决定，留空时前端按「控制台域名:grpc_port」推断。
+
+部署要点：
+
+- **建议启用 TLS**（`grpc_tls_cert` + `grpc_tls_key` 两项都填，证书放 `certs/`，该目录已 gitignore），
+  对外地址写 `https://域名:20722`。
+- **客户端开了系统代理就连不上，且这与 TLS 无关。** `Grpc.Net.Client` 的负载均衡层
+  （`BalancerHttpHandler`）与 HTTP 代理不兼容：它把 subchannel 挂在 `HttpRequestMessage` 上，
+  经代理时连接的初始请求是 `CONNECT` 隧道请求、读不到该选项，于是抛
+  `HttpRequestException: Unable to get subchannel from HttpRequestMessage.`。
+  明文 `http://` 则是另一个错法：`unable to establish HTTP/2 connection`。
+  换 `https://` 只改变报错内容，**不能**修好。ClassIsland 用
+  `GrpcChannel.ForAddress(addr)`（不传 options）建连接，客户端改不了这个行为，服务端也无解——
+  上游已知限制，见 [grpc-dotnet#2254](https://github.com/grpc/grpc-dotnet/issues/2254)，无修复时间表。
+  - 唯一办法：客户端**不走代理**连接该域名——把它加入系统代理例外，或关掉系统代理改用 TUN 模式。
+  - 仅在代理软件里给该域名配「直连 / DIRECT」规则**无效**，流量仍会先进代理进程。
+  - 校内局域网部署（`10.` / `172.16-31.` / `192.168.` 私有地址）能自动命中 Windows 默认代理例外，可绕开该问题。
+
 ## 许可
 
 AGPLv3 License · Copyright © 2019-2026 Crab Studio

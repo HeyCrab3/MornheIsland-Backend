@@ -38,11 +38,21 @@ export const config: ConfigProvider = {
     //   · 明文直连：'http://ci.example.com:20722'（需放行 20722，且域名能解析）
     //   · 启用 TLS：'https://ci.example.com:20722'（配合下面两项）
     //
-    // 强烈建议启用 TLS。原因很实际：明文 http:// 目标会被 .NET 客户端交给系统代理
-    // 做「普通转发」，而代理只懂 HTTP/1.1，客户端会报
-    //   Requesting HTTP version 2.0 ... unable to establish HTTP/2 connection
-    // 装了代理软件（Clash/v2ray 等）的机器一律连不上。换成 https:// 后客户端走
-    // CONNECT 隧道，代理只管转发字节，HTTP/2 就能正常跑。
+    // 强烈建议启用 TLS（保密性 + 明文 h2c 经代理更早失败），但要清楚：
+    // ⚠ 启用 TLS **不能**解决「客户端开了系统代理就连不上」的问题。
+    //   Grpc.Net.Client 的负载均衡层（BalancerHttpHandler）与 HTTP 代理不兼容：
+    //   它把 subchannel 挂在 HttpRequestMessage 上，而经代理时连接的初始请求是
+    //   CONNECT 隧道请求、读不到该选项，于是抛
+    //     HttpRequestException: Unable to get subchannel from HttpRequestMessage. (<代理地址>)
+    //   明文 http:// 则是另一个错法：
+    //     Requesting HTTP version 2.0 ... unable to establish HTTP/2 connection
+    //   ClassIsland 用 GrpcChannel.ForAddress(addr) 不传任何 options，改不了这个行为，
+    //   服务端也无解（上游已知限制，见 grpc-dotnet#2254，无修复时间表）。
+    //   唯一办法是让客户端不走代理连接本域名：
+    //     · 把 gRPC 域名加进系统代理例外的「绕过代理服务器地址列表」
+    //     · 或关掉系统代理、改用 TUN / 虚拟网卡模式
+    //   注意「代理软件里把域名设为 DIRECT 规则」没用——流量仍会先进代理进程，照样触发该 bug。
+    //   校内局域网部署（用 10./172.16-31./192.168. 私有地址）可自动命中 Windows 默认代理例外。
     public_grpc_address: '',
     // gRPC 的 TLS 证书链与私钥路径。两项都填才启用 TLS；任一为空则退回明文 h2c。
     // ⚠ 这两个文件绝不能进 git：放到 certs/ 目录即可，该目录已在 .gitignore 中。
