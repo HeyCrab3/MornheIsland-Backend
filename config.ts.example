@@ -31,13 +31,23 @@ export const config: ConfigProvider = {
     // 客户端访问本服务的对外地址，用于拼接插件下载地址（本机托管的那类插件）。
     // 留空时按请求推断（控制台传 window.location.origin）。
     public_base_url: 'https://ci.example.com',
-    // 集控 gRPC 监听端口（h2c 明文）。默认 20722。
+    // 集控 gRPC 监听端口。默认 20722。
     grpc_port: 20722,
     // 下发给客户端的 gRPC 地址，会写进 ManagementPreset 的 ManagementServerGrpc。
     // 留空时前端按「控制台域名:grpc_port」推断——只在客户端能直连该端口时成立。
-    //   · 直连端口：'http://ci.example.com:20722'（需放行 20722，且域名能解析）
-    //   · nginx 走 TLS：'https://ci.example.com'（nginx 配 grpc_pass grpc://127.0.0.1:20722）
+    //   · 明文直连：'http://ci.example.com:20722'（需放行 20722，且域名能解析）
+    //   · 启用 TLS：'https://ci.example.com:20722'（配合下面两项）
+    //
+    // 强烈建议启用 TLS。原因很实际：明文 http:// 目标会被 .NET 客户端交给系统代理
+    // 做「普通转发」，而代理只懂 HTTP/1.1，客户端会报
+    //   Requesting HTTP version 2.0 ... unable to establish HTTP/2 connection
+    // 装了代理软件（Clash/v2ray 等）的机器一律连不上。换成 https:// 后客户端走
+    // CONNECT 隧道，代理只管转发字节，HTTP/2 就能正常跑。
     public_grpc_address: '',
+    // gRPC 的 TLS 证书链与私钥路径。两项都填才启用 TLS；任一为空则退回明文 h2c。
+    // ⚠ 这两个文件绝不能进 git：放到 certs/ 目录即可，该目录已在 .gitignore 中。
+    grpc_tls_cert: '',
+    grpc_tls_key: '',
     llm: {
         endpoint: 'https://your-endpoint-url.com',
         apiKey: 'your-api-key',

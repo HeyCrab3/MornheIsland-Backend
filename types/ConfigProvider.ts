@@ -64,6 +64,15 @@ export interface ConfigProvider {
      * 例：直连端口填 http://ci.example.com:20722；经 nginx 走 TLS 填 https://ci.example.com
      */
     public_grpc_address?: string,
+    /**
+     * gRPC 的 TLS 证书链与私钥路径。两项都填 → 以 TLS(https) 提供服务；留空 → 明文 h2c。
+     *
+     * 上 TLS 的现实理由：明文 http:// 目标会被 .NET 客户端交给系统代理做普通转发，
+     * 代理只懂 HTTP/1.1，客户端就报 "unable to establish HTTP/2 connection"。
+     * 改用 https:// 后客户端走 CONNECT 隧道，代理环境下也能通。
+     */
+    grpc_tls_cert?: string,
+    grpc_tls_key?: string,
     /** 大模型服务（OCR后处理） */
     llm?: {
         /** 服务地址（API Endpoint） */

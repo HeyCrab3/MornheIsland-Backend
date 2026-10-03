@@ -9,6 +9,7 @@
  */
 import * as grpc from "@grpc/grpc-js";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { services, encodeMessage } from "./loader";
 import { initKeys, getPublicKey, decryptChallenge, createSession, validateSession } from "./auth";
 import { upsertClient, removeClient, attachStream, detachStream, touchClient, isOnline, pushCommand, broadcastCommand } from "./clients";
@@ -250,6 +251,44 @@ const configUploadImpl = {
 
 let grpcServer: grpc.Server | null = null;
 
+/** 是否配置了 TLS（证书链 + 私钥都给全才算） */
+export function isGrpcTlsEnabled(): boolean {
+  return !!String(config.grpc_tls_cert || "").trim() && !!String(config.grpc_tls_key || "").trim();
+}
+
+/**
+ * 按配置构建凭据：都配了证书和私钥就走 TLS，否则明文 h2c。
+ *
+ * 为什么要支持 TLS：明文 http:// 目标会被 .NET 客户端交给系统代理做「普通转发」，
+ * 而代理只懂 HTTP/1.1，HTTP/2 建不起来，客户端报
+ * "Requesting HTTP version 2.0 ... unable to establish HTTP/2 connection"。
+ * 换成 https:// 后客户端改用 CONNECT 隧道，代理只管转发字节，HTTP/2 就能跑通。
+ */
+function buildServerCredentials(): grpc.ServerCredentials {
+  if (!isGrpcTlsEnabled()) return grpc.ServerCredentials.createInsecure();
+  const certPath = String(config.grpc_tls_cert).trim();
+  const keyPath = String(config.grpc_tls_key).trim();
+  const certChain = readFileSync(certPath);
+  const privateKey = readFileSync(keyPath);
+  log(`[grpc] 已启用 TLS（证书 ${certPath}）`, "info", "grpc");
+  return grpc.ServerCredentials.createSsl(null, [{ private_key: privateKey, cert_chain: certChain }], false);
+}
+
+/**
+ * 启动时自检：对外公布的地址 scheme 必须和实际监听方式一致，
+ * 否则客户端必然连不上，而且报错很难指向根因（尤其明文/代理那一类）。
+ */
+function warnIfSchemeMismatch(): void {
+  const tls = isGrpcTlsEnabled();
+  const pub = String(config.public_grpc_address || "").trim();
+  if (!pub) return;
+  if (tls && pub.startsWith("http://")) {
+    log(`[grpc] ⚠ 配置不一致：服务端已启用 TLS，但 public_grpc_address 是 "${pub}"（http://）。客户端应当用 https://`, "warn", "grpc");
+  } else if (!tls && pub.startsWith("https://")) {
+    log(`[grpc] ⚠ 配置不一致：服务端是明文 h2c，但 public_grpc_address 是 "${pub}"（https://）。客户端应当用 http://，或给服务端配上 grpc_tls_cert/grpc_tls_key`, "warn", "grpc");
+  }
+}
+
 /**
  * 进程启动时没有任何在线流，先把遗留的 online 标记清掉。
  * 否则上一次运行（含热重载）留下的 online:true 会与内存状态不一致。
@@ -273,11 +312,17 @@ export async function startGrpcServer(): Promise<void> {
   server.addService(services.ConfigUpload.service, configUploadImpl);
 
   const port = config.grpc_port ?? 20722;
+  const credentials = buildServerCredentials();
+  warnIfSchemeMismatch();
 
   await new Promise<void>((resolve, reject) => {
-    server.bindAsync(`0.0.0.0:${port}`, grpc.ServerCredentials.createInsecure(), (err, boundPort) => {
+    server.bindAsync(`0.0.0.0:${port}`, credentials, (err, boundPort) => {
       if (err) return reject(err);
-      log(`[grpc] 集控 gRPC 服务器运行在端口 ${boundPort}`, "info", "grpc");
+      log(
+        `[grpc] 集控 gRPC 服务器运行在端口 ${boundPort}（${isGrpcTlsEnabled() ? "TLS/https" : "明文 h2c/http"}）`,
+        "info",
+        "grpc",
+      );
       resolve();
     });
   });

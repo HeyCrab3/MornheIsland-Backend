@@ -8,3 +8,5 @@ yarn.lock
 yarn.lock
 # 集控握手的服务器 PGP 私钥：必须每台部署各自持有，绝不能进仓库
 grpc/.server-keys.json
+# gRPC TLS 证书与私钥（泛域名证书），同样绝不能进仓库
+certs/

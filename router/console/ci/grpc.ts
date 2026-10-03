@@ -5,7 +5,7 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 import { listClients, clients, isOnline } from "../../../grpc/clients";
-import { sendNotification, sendDataUpdated, sendRestartApp, isGrpcListening, getGrpcPort } from "../../../grpc/server";
+import { sendNotification, sendDataUpdated, sendRestartApp, isGrpcListening, getGrpcPort, isGrpcTlsEnabled } from "../../../grpc/server";
 import { log } from "../../../util/log";
 import { config } from "../../../config";
 
@@ -26,6 +26,11 @@ router.get("/v1/console/ci/grpc/endpoint", (req, res) => {
   if (!getUserId(req)) return res.status(401).json({ code: 401, msg: "请先登录" });
 
   const configured = String(config.public_grpc_address || "").trim().replace(/\/+$/, "");
+  const tls = isGrpcTlsEnabled();
+  // scheme 与实际监听方式必须一致，不一致客户端必然连不上，这里直接暴露出来让界面能提示
+  const schemeMismatch =
+    !!configured && (tls ? configured.startsWith("http://") : configured.startsWith("https://"));
+
   res.json({
     code: 0,
     msg: "ok",
@@ -34,6 +39,8 @@ router.get("/v1/console/ci/grpc/endpoint", (req, res) => {
       port: getGrpcPort(),
       configured,
       isConfigured: !!configured,
+      tls,
+      schemeMismatch,
       managedServerKind: 1,
     },
   });
