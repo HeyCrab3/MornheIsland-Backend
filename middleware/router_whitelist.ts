@@ -14,6 +14,7 @@ const routerWhiteList = [
   /^\/v1\/client\/.*/,          // gRPC 集控模式的清单端点（客户端无需 JWT）
   /^\/api\/v1\/device\/.*/,     // Class Widgets 2 集控设备端：设备用 Bearer device_token，不走 JWT
   /^\/v1\/device\/.*/,          // 同上，无 /api 前缀的别名
+  /^\/v1\/public\/.*/,          // 看板等公开只读端点（天气代理等），无需 JWT
 ];
 
 // 递归扫描路由目录并添加到白名单列表中

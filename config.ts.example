@@ -58,6 +58,16 @@ export const config: ConfigProvider = {
     // ⚠ 这两个文件绝不能进 git：放到 certs/ 目录即可，该目录已在 .gitignore 中。
     grpc_tls_cert: '',
     grpc_tls_key: '',
+    // ── 看板（0.2.2）天气 ───────────────────────────────────────
+    // 和风天气 key。⚠ 只在服务端使用：看板通过 /v1/public/weather.json 代理取数据，
+    // key 不会下发到浏览器（否则任何人 F12 就能拿走盗刷）。
+    // 也可用环境变量覆盖，Docker 部署时更推荐：QWEATHER_KEY / QWEATHER_HOST / QWEATHER_LOCATION
+    qweather_key: '',
+    // API host。老 key 用 devapi.qweather.com；新账号一般是 <你的id>.re.qweatherapi.com
+    qweather_host: 'devapi.qweather.com',
+    // 城市 LocationID（只查这一个城市，接口不接受任意地点透传，避免被盗刷）
+    // 查 ID 见和风官方 LocationList 仓库；例：济南 101120101、北京 101010100
+    qweather_location: '',
     llm: {
         endpoint: 'https://your-endpoint-url.com',
         apiKey: 'your-api-key',

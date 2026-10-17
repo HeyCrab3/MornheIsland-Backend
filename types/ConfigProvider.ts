@@ -73,6 +73,16 @@ export interface ConfigProvider {
      */
     grpc_tls_cert?: string,
     grpc_tls_key?: string,
+    /**
+     * 和风天气（QWeather）配置，供看板页显示天气用。
+     * key 只在服务端使用，由 /v1/public/weather.json 代理，绝不下发到浏览器。
+     * 也可以用环境变量覆盖：QWEATHER_KEY / QWEATHER_HOST / QWEATHER_LOCATION。
+     */
+    qweather_key?: string,
+    /** API host。老 key 可用 devapi.qweather.com；新账号通常是 xxxxx.re.qweatherapi.com */
+    qweather_host?: string,
+    /** 城市 LocationID（如济南 101120101），不做任意地点透传以免被盗刷 */
+    qweather_location?: string,
     /** 大模型服务（OCR后处理） */
     llm?: {
         /** 服务地址（API Endpoint） */
