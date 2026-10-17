@@ -81,8 +81,12 @@ export interface ConfigProvider {
     qweather_key?: string,
     /** API host。老 key 可用 devapi.qweather.com；新账号通常是 xxxxx.re.qweatherapi.com */
     qweather_host?: string,
-    /** 城市 LocationID（如济南 101120101），不做任意地点透传以免被盗刷 */
+    /** 城市 LocationID（如济南 101120101），作为默认城市；看板也可在设置里切换 */
     qweather_location?: string,
+    /** GeoAPI 主机（城市名 → LocationID 用）。留空自动推断：新账号用同主机 /geo 路径，老 key 用 geoapi.qweather.com */
+    qweather_geo_host?: string,
+    /** 可选白名单：填了就只允许这些 LocationID 被看板请求，防止 key 被拿去查任意城市 */
+    qweather_locations?: string[],
     /** 大模型服务（OCR后处理） */
     llm?: {
         /** 服务地址（API Endpoint） */

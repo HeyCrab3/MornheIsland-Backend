@@ -65,9 +65,14 @@ export const config: ConfigProvider = {
     qweather_key: '',
     // API host。老 key 用 devapi.qweather.com；新账号一般是 <你的id>.re.qweatherapi.com
     qweather_host: 'devapi.qweather.com',
-    // 城市 LocationID（只查这一个城市，接口不接受任意地点透传，避免被盗刷）
+    // 城市 LocationID，作为默认城市（看板设置里也可以切换）
     // 查 ID 见和风官方 LocationList 仓库；例：济南 101120101、北京 101010100
     qweather_location: '',
+    // GeoAPI 主机，留空自动推断（老 key → geoapi.qweather.com；新账号 → 同主机 /geo 路径）
+    qweather_geo_host: '',
+    // 可选白名单：填了就只允许看板请求这些城市，防止 key 被拿去查任意地点
+    // 例：['101120101', '101120102']；留空/不填表示允许任意合法 LocationID
+    qweather_locations: [],
     llm: {
         endpoint: 'https://your-endpoint-url.com',
         apiKey: 'your-api-key',
