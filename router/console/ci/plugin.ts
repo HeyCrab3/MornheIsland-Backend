@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { log } from "../../../util/log";
+import { safeClientIdentities } from "../../../util/ci_public";
 import { readCipxManifest } from "../../../util/cipx";
 import { resolvePublicBase, resolvePluginSourceUrl } from "../../../util/public_url";
 import { fetchFirstAvailable } from "../../../util/plugin_source";
@@ -336,12 +337,14 @@ router.post("/v1/console/ci/plugin/query-all", async (req, res) => {
   if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
 
   const classes = await req.db.collection("ci_classes").find({ userId }).project({ identity: 1 }).toArray();
-  const identities = classes.map((c: any) => c.identity).filter(Boolean);
-  if (!identities.length) {
+  // 不能用 identity 直接匹配 ci_clients：班级代号全库不唯一，
+  // 会把别校同代号设备的记录一并拉进来（能读到、还能命令到别人的设备）
+  const { ids, ambiguous } = await safeClientIdentities(req.db, classes);
+  if (!ids.length) {
     return res.json({ code: 0, msg: "没有班级", data: { total: 0, online: 0, refreshed: 0, devices: [] } });
   }
 
-  const clientDocs = await req.db.collection("ci_clients").find({ identity: { $in: identities } }).toArray();
+  const clientDocs = await req.db.collection("ci_clients").find({ identity: { $in: ids } }).toArray();
   const online = clientDocs.filter((d: any) => isOnline(d.cuid));
 
   const devices = await Promise.all(

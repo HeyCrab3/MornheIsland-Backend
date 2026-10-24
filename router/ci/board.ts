@@ -46,9 +46,22 @@ router.get("/v1/ci/:classIdentity/board.json", async (req, res) => {
       if (a.subjectId) subjectByEntry.set(a.entryId, a.subjectId);
     }
 
+    /*
+     * 单双周用 weekDiv（0=每周，1=单周，2=双周）直接下发，而不是只给 weeks 数组。
+     * weeks 是 [1]/[2] 这种**有限周次数组**，一旦学期往后走超出这个范围，
+     * 客户端会把整天都过滤掉，表现就是"双周上课时看板说今天没有课"。
+     * weekDiv 是无限期的奇偶规则，客户端拿真实周次算奇偶即可。
+     */
+    const plansRaw = bundle.classplan.data?.classPlans || bundle.classplan.data || {};
+    const weekDivByCp = new Map<string, number>();
+    for (const [cpId, cp] of Object.entries<any>(plansRaw)) {
+      weekDivByCp.set(cpId, Number(cp?.TimeRule?.WeekCountDiv) || 0);
+    }
+
     const days = schedule.days.map((day) => ({
       weekDays: (day.dayOfWeek || []).map(toJsDayOfWeek),
       weeks: day.weeks,
+      weekDiv: weekDivByCp.get(day.id) ?? 0,
       entries: day.entries.map((e) => {
         const subjectId = subjectByEntry.get(e.id) || e.subjectId || null;
         const subject = subjectId ? subjectById.get(subjectId) : null;

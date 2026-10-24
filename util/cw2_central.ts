@@ -12,6 +12,7 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { ObjectId } from "mongodb";
+import { log } from "./log";
 import { buildCw2Schedule, validateCw2Schedule } from "./cw2_schedule";
 
 export const CC_PAIRING_CODES = "cc_pairing_codes";
@@ -81,26 +82,103 @@ export interface ClassBundle {
 }
 
 /**
- * 按班级加载关联资源。科目优先取课表里记录的 subjectsId（和
- * router/ci/subjects.ts 的行为保持一致），其次才用班级上的 subjectsId。
+ * 按班级加载关联资源。
+ *
+ * ⚠ 解析顺序很重要，踩过坑：**课表资源自己记录的 timelayoutId / subjectsId 优先**。
+ * CSES 导入时会同时写 `cp.data.timelayoutId`，而 ClassPlans 里的 `TimeLayoutId`
+ * 指向的也是那一份。用户之后如果在档案库里重新选了别的时间表，只会更新班级字段
+ * （`cls.timelayoutId`），于是「档案库显示已关联」和「ClassPlan 实际引用」就分叉了：
+ * ClassIsland 载入时找不到被引用的那份，报「您还未给课程表配置时间表」，
+ * 下发的时间表也变成没有名字的空壳。
+ *
+ * 所以这里以**课表真正的引用**为准，班级字段只作兜底。
  */
 export async function loadClassBundle(db: any, cls: any): Promise<ClassBundle> {
   const cpId = toObjectId(cls?.classplanId);
-  const tlId = toObjectId(cls?.timelayoutId);
-  const subId = toObjectId(cls?.subjectsId);
+  const clsTlId = toObjectId(cls?.timelayoutId);
+  const clsSubId = toObjectId(cls?.subjectsId);
   const polId = toObjectId(cls?.policyId);
 
-  const [classplan, timelayout, directSubjects, policy] = await Promise.all([
+  const [classplan, policy] = await Promise.all([
     cpId ? db.collection("ci_classplans").findOne({ _id: cpId }) : null,
-    tlId ? db.collection("ci_timelayouts").findOne({ _id: tlId }) : null,
-    subId ? db.collection("ci_subjects").findOne({ _id: subId }) : null,
     polId ? db.collection("ci_policies").findOne({ _id: polId }) : null,
   ]);
 
+  const cpTlId = toObjectId(classplan?.data?.timelayoutId);
+  const cpSubId = toObjectId(classplan?.data?.subjectsId);
+
+  const [tlResolved, directSubjects] = await Promise.all([
+    cpTlId
+      ? db.collection("ci_timelayouts").findOne({ _id: cpTlId })
+      : clsTlId
+        ? db.collection("ci_timelayouts").findOne({ _id: clsTlId })
+        : null,
+    cpSubId
+      ? db.collection("ci_subjects").findOne({ _id: cpSubId })
+      : clsSubId
+        ? db.collection("ci_subjects").findOne({ _id: clsSubId })
+        : null,
+  ]);
+  // 下面的空壳兜底需要重新赋值，所以这里不能是 const
+  let timelayout = tlResolved;
+
   let subjects = directSubjects;
-  const indirect = toObjectId(classplan?.data?.subjectsId);
-  if (!subjects && indirect) {
-    subjects = await db.collection("ci_subjects").findOne({ _id: indirect });
+  if (!subjects && clsSubId) {
+    subjects = await db.collection("ci_subjects").findOne({ _id: clsSubId });
+  }
+
+  /*
+   * 最后一道兜底：课表引用的那份时间表如果是**空壳**（没有 Layouts），
+   * 而班级字段上那份是好的，就用好的那份。
+   * 只影响看板/CW2 这类「只关心时间段」的用途；ClassIsland 侧仍需要引用一致，
+   * 所以这里记一条 warning，控制台应把它作为数据体检项暴露出来。
+   */
+  const layoutCount = (doc: any) => {
+    const data = doc?.data || {};
+    return Object.values<any>(data).reduce(
+      (n, v) => n + (Array.isArray(v?.Layouts) ? v.Layouts.length : 0),
+      0,
+    );
+  };
+  if (timelayout && layoutCount(timelayout) === 0 && clsTlId && clsTlId.toString() !== cpTlId?.toString()) {
+    const fallback = await db.collection("ci_timelayouts").findOne({ _id: clsTlId });
+    if (fallback && layoutCount(fallback) > 0) {
+      log(
+        `[ci] 班级 ${cls?.name || cls?._id}：课表引用的时间表为空壳，已退回班级关联的那份（${fallback.name || fallback._id}）`,
+        "warn",
+        "auth",
+      );
+      timelayout = fallback;
+    }
+  }
+
+  /*
+   * 引用不一致的数据修复：ClassPlans 引用的 uuid 在所选时间表里不存在，
+   * 但那份时间表里恰好只有一条可用时间轴时，把它挂到被引用的 uuid 上。
+   * 这样看板/CW2 能正常算出时间段；同时记警告，提醒这是数据不一致而非正常状态。
+   */
+  if (timelayout) {
+    const plans = classplan?.data?.classPlans || classplan?.data || {};
+    const referenced = [
+      ...new Set(
+        Object.values<any>(plans)
+          .map((p) => String(p?.TimeLayoutId ?? ""))
+          .filter(Boolean),
+      ),
+    ];
+    const tlData = timelayout.data || {};
+    const tlUuids = Object.keys(tlData);
+    if (referenced.length === 1 && tlUuids.length === 1 && !tlUuids.includes(referenced[0])) {
+      const only: any = tlData[tlUuids[0]];
+      if (Array.isArray(only?.Layouts) && only.Layouts.length) {
+        log(
+          `[ci] 班级 ${cls?.name || cls?._id}：ClassPlan 引用的 ${referenced[0]} 不在时间表内，已把「${only.Name || "未命名"}」重映射到该 uuid（数据不一致）`,
+          "warn",
+          "auth",
+        );
+        timelayout = { ...timelayout, data: { [referenced[0]]: only } };
+      }
+    }
   }
 
   return { classplan, timelayout, subjects, policy };

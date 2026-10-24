@@ -10,6 +10,7 @@
 import * as grpc from "@grpc/grpc-js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { ObjectId } from "mongodb";
 import { services, encodeMessage } from "./loader";
 import { initKeys, getPublicKey, decryptChallenge, createSession, validateSession } from "./auth";
 import { upsertClient, removeClient, attachStream, detachStream, touchClient, isOnline, pushCommand, broadcastCommand } from "./clients";
@@ -300,9 +301,57 @@ async function resetOnlineFlags(): Promise<void> {
   } catch { /* 数据库不可用不影响 gRPC 服务启动 */ }
 }
 
+/**
+ * 进程启动时把老设备的班级归属**固化**到 ci_clients.classId。
+ *
+ * 背景：设备注册时只上报班级标识（identity），而班级标识全库不唯一
+ * （实测 7 个账号都用了 "1"）。按标识解析会命中任意一个，导致跨校串数据。
+ * 新 preset 已经改用班级 _id，但**已经在跑的设备不能断**，所以这里按
+ * 当前解析结果把归属钉死一次：之后即使别的学校新增同名班级，设备也不会漂走。
+ */
+async function backfillClientClassIds(): Promise<void> {
+  try {
+    const db = mongoClient.db(config.db_name);
+    const rows = await db
+      .collection("ci_clients")
+      .find({ $or: [{ classId: { $exists: false } }, { classId: null }] })
+      .toArray();
+    if (!rows.length) return;
+
+    let pinned = 0;
+    let unresolved = 0;
+    for (const row of rows) {
+      const ident = String((row as any).identity ?? "").trim();
+      if (!ident) {
+        unresolved++;
+        continue;
+      }
+      let cls: any = null;
+      try {
+        if (ObjectId.isValid(ident)) {
+          cls = await db.collection("ci_classes").findOne({ _id: new ObjectId(ident) });
+        }
+      } catch {
+        cls = null;
+      }
+      if (!cls) cls = await db.collection("ci_classes").findOne({ identity: ident });
+      if (!cls) {
+        unresolved++;
+        continue;
+      }
+      await db.collection("ci_clients").updateOne({ _id: (row as any)._id }, { $set: { classId: cls._id } });
+      pinned++;
+    }
+    log(`[grpc] 已固化 ${pinned} 台设备的班级归属（无法解析 ${unresolved} 台）`, "info", "grpc");
+  } catch (e) {
+    log(`[grpc] 固化设备班级归属失败：${e}`, "error", "grpc");
+  }
+}
+
 export async function startGrpcServer(): Promise<void> {
   await initKeys();
   await resetOnlineFlags();
+  await backfillClientClassIds();
 
   const server = new grpc.Server();
   server.addService(services.ClientRegister.service, clientRegisterImpl);

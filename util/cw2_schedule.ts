@@ -182,7 +182,9 @@ export function buildCw2Schedule(input: {
     const timeRule = cp.TimeRule || {};
     const dayOfWeek = [toCw2DayOfWeek(timeRule.WeekDay)];
     const weeks = toCw2Weeks(timeRule.WeekCountDiv, timeRule.WeekCountDivTotal);
-    maxWeekCycle = Math.max(maxWeekCycle, Number(timeRule.WeekCountDivTotal) || 1);
+    // WeekCountDivTotal 在老数据里可能是 undefined（早期 CSES 导入没写这一项），
+    // 兜 2 而不是 1——兜成 1 会让单/双周退化成只有一周，学期往后就全被过滤掉。
+    maxWeekCycle = Math.max(maxWeekCycle, Number(timeRule.WeekCountDivTotal) || 2);
 
     // entry 结构与科目是两条线：entries 只描述时间，科目交给 assignments。
     const entries: Cw2Entry[] = [];
@@ -198,13 +200,23 @@ export function buildCw2Schedule(input: {
         continue;
       }
       const isClassSlot = type === "class";
+      // 前 12 个课时的序号（时间表里 TimePointName 可能为空，兜底用）
+      const slotOrdinal = classSlotToClassesIndex.length + 1;
       entries.push({
         id: `${cpUuid}-${i}`,
         type,
         startTime,
         endTime,
         subjectId: null,
-        title: isClassSlot ? null : (l.BreakName || l.TimePointName || null),
+        /*
+         * 课次条目也带节次名：CW2 校验器只给「既无 title 又无科目」的条目塞随机标题，
+         * 而看板要靠它显示「第N节」——否则没排到科目的时段只能显示成笼统的"上课"。
+         * 时间表里 TimePointName 常为空，这时用序号兜底。
+         */
+        title:
+          l.BreakName ||
+          l.TimePointName ||
+          (isClassSlot ? `第${slotOrdinal}节` : type === "break" ? "课间" : null),
       });
       if (isClassSlot) classSlotToClassesIndex.push(i);
     }

@@ -11,6 +11,7 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 import { log } from "../../../util/log";
+import { safeClientIdentities } from "../../../util/ci_public";
 import { resolvePublicBase, resolvePluginSourceUrl } from "../../../util/public_url";
 import { deliverPlugin, fetchClientPlugins, BOOTSTRAP_PLUGIN_ID } from "../../../grpc/server";
 import { isOnline } from "../../../grpc/clients";
@@ -159,13 +160,26 @@ router.post("/v1/console/ci/plugin/profile/:id/apply", async (req, res) => {
   }
   const desired = [...desiredMap.entries()].map(([id, doc]) => ({ id, doc }));
 
-  // ── 目标班级 → identity ──
+  // ── 目标班级 → 可用于匹配设备的标识 ──
   const classOids = toObjectIds(profile.classIds);
   const classes = classOids.length
     ? await db.collection("ci_classes").find({ _id: { $in: classOids }, userId }).project({ name: 1, identity: 1 }).toArray()
     : [];
-  const identities = classes.map((c: any) => c.identity).filter(Boolean);
-  const classByIdentity = new Map(classes.map((c: any) => [c.identity, c]));
+  // 同时按 _id 和 identity 建表：新 preset 上报的是班级 _id，老设备上报的是代号
+  const classByIdentity = new Map<string, any>();
+  for (const c of classes as any[]) {
+    if (c.identity) classByIdentity.set(String(c.identity), c);
+    classByIdentity.set(String(c._id), c);
+  }
+  // 只用安全标识匹配 ci_clients，避免把别校同代号设备算成自己的
+  const { ids: identities, ambiguous } = await safeClientIdentities(db, classes as any[]);
+  if (ambiguous.length) {
+    log(
+      `[plugin/profile] 配置组对账忽略有歧义的班级标识：${ambiguous.join("、")}（全库重复，可能属于其他学校）`,
+      "warn",
+      "auth",
+    );
+  }
 
   const emptySummary = {
     targetDevices: 0, upToDate: 0, pushed: 0, offline: 0, noResponse: 0, noBootstrap: 0,
@@ -175,7 +189,7 @@ router.post("/v1/console/ci/plugin/profile/:id/apply", async (req, res) => {
   if (!identities.length) {
     return res.json({
       code: 0,
-      msg: "该配置组还没有绑定班级，或绑定班级的班级标识为空",
+      msg: "该配置组还没有绑定班级",
       data: { devices: [], summary: emptySummary },
     });
   }
