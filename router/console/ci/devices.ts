@@ -2,6 +2,7 @@ import express from "express";
 import { log } from "../../../util/log";
 import { ObjectId } from "mongodb";
 import { isOnline } from "../../../grpc/clients";
+import { safeClientIdentities } from "../../../util/ci_public";
 
 const router = express.Router();
 
@@ -118,24 +119,48 @@ router.get("/v1/console/ci/device-overview", async (req, res) => {
     if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
 
     const classes = await loadClasses(db, new ObjectId(userId));
-    const identityToClass = new Map(
+
+    // 设备归属的判定顺序：① 绑定后写回的 classId（最可信，客户端实际在拉哪份配置就看它）
+    // ② 老的班级标识字符串（只接受全库唯一的，避免把别的学校同名标识的设备算进来）。
+    // 只用 identity 匹配会漏掉「classIdentity 已改成 ObjectId」的那批设备——它们的 identity
+    // 是 24 位 hex，跟班级的人类标识永远对不上，于是就「在线但前端看不到」。
+    const { ids } = await safeClientIdentities(db, classes);
+    const hex24 = /^[0-9a-f]{24}$/i;
+    const objectIds = ids.filter((i: string) => hex24.test(i)).map((i: string) => new ObjectId(i));
+    const idFilter = [...ids, ...objectIds];
+
+    const byClassId = new Map<string, any>(classes.map((c: any) => [String(c._id), c]));
+    const byIdentity = new Map<string, any>(
       classes.filter((c: any) => c.identity).map((c: any) => [c.identity, c]),
     );
+    const resolveClass = (d: any) => {
+      const cid = String(d?.classId ?? "").trim();
+      if (cid && byClassId.has(cid)) return byClassId.get(cid);
+      return byIdentity.get(d?.identity) || null;
+    };
 
     // ── 集控（gRPC）──
-    const clientDocs = await db
-      .collection("ci_clients")
-      .find({ identity: { $in: [...identityToClass.keys()] } })
-      .sort({ lastSeen: -1 })
-      .toArray();
+    const clientDocs = idFilter.length
+      ? await db
+          .collection("ci_clients")
+          .find({ $or: [{ classId: { $in: idFilter } }, { identity: { $in: idFilter } }] })
+          .sort({ lastSeen: -1 })
+          .toArray()
+      : [];
 
     const grpc = clientDocs.map((d: any) => {
-      const cls: any = identityToClass.get(d.identity);
+      const cls: any = resolveClass(d);
+      // 归属漂移：identity 指向的班和 classId 指向的班不是同一个（多见于改过绑定）。
+      // identity 可能是老的班级标识，也可能是改版后写进去的班级 ObjectId，两种都要认。
+      const identKey = String(d.identity ?? "").trim();
+      const byIdent: any = byClassId.get(identKey) || byIdentity.get(identKey) || null;
       return {
         mode: "grpc" as const,
         cuid: d.cuid,
         identity: d.identity || "",
+        classId: d.classId ? String(d.classId) : "",
         className: cls?.name || "",
+        drift: !!(cls && byIdent && String(cls._id) !== String(byIdent._id)),
         mac: d.mac || "",
         online: isOnline(d.cuid),
         lastSeen: d.lastSeen,

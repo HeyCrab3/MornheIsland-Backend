@@ -3,7 +3,7 @@ import path from 'path'
 import { config } from '../config.js'; 
 
 type LoggerType = 'info' | 'warn' | 'error' | 'fatal' | undefined
-type CatType = 'auth' | 'access' | 'routes' | 'whitelist' | 'default'
+type CatType = 'auth' | 'access' | 'routes' | 'whitelist' | 'grpc' | 'default'
 
 const fileName = path.join(config.log_path, `log${new Date().getFullYear()}${new Date().getMonth() + 1}${new Date().getDate()}-${new Date().getHours()}${new Date().getMinutes()}${new Date().getSeconds()}.log`)
 
@@ -14,6 +14,7 @@ log4js.configure({
     access: { appenders: ["sky", "console", "access"], level: "info" },
     routes: { appenders: ["sky", "console"], level: "info" },
     whitelist: { appenders: ["sky", "console"], level: "info" },
+    grpc: { appenders: ["sky", "console"], level: "info" },
     default: { appenders: ["sky", "console"], level: "info" }
   }
 });
