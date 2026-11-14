@@ -14,6 +14,7 @@ import { uuid } from './util/uuid'
 import session from 'express-session';
 import { startGrpcServer, stopGrpcServer } from './grpc/server';
 import { backfillPluginIds } from './util/plugin_migrate';
+import { tokenGuard } from './util/token_guard';
 
 const app = express()
 
@@ -92,6 +93,9 @@ app.use((req, _res, next) => {
 // JWT 鉴权中间件
 app.use(expressjwt(config.jwt).unless({path: routerWhiteList}))
 
+// 令牌版本校验：账号一旦「下线所有设备 / 吊销 AK」，此前签发的 JWT 立即失效
+app.use(tokenGuard)
+
 // 请求日志中间件
 app.use((req, res, next) => {
     const db = client.db(config.db_name)
@@ -105,6 +109,9 @@ app.use((req, res, next) => {
         path: req.path,
         method: req.method,
         uuid: req_uuid,
+        // 归属到具体账号，事后能回答「谁在什么时候动了什么」
+        user_id: req.auth?.userId ? String(req.auth.userId) : null,
+        user_name: req.auth?.userName || null,
         // 增加一个取UA
         user_agent: req.headers['user-agent'] || '',
         time: new Date().toLocaleString(),

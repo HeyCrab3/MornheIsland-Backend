@@ -15,6 +15,10 @@ const routerWhiteList = [
   /^\/api\/v1\/device\/.*/,     // Class Widgets 2 集控设备端：设备用 Bearer device_token，不走 JWT
   /^\/v1\/device\/.*/,          // 同上，无 /api 前缀的别名
   /^\/v1\/public\/.*/,          // 看板等公开只读端点（天气代理等），无需 JWT
+  // 二步验证的第二步：这一刻用户手上还没有令牌，票据本身就是凭证。
+  // 曾经漏了这条 —— SSO 返回 needMfa 之后，前端带着票据去验码，
+  // 结果被 expressjwt 挡在门外回「请先登录」，开了 2FA 的账号从此登不进来。
+  /^\/v1\/user\/security\/mfa\/login$/,
 ];
 
 // 递归扫描路由目录并添加到白名单列表中

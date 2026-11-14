@@ -1,18 +1,19 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 import { log } from "../../util/log";
+import { authLog } from "../../util/auth_log.ts";
+import { checkReauth, rejectReauth } from "../../util/reauth.ts";
 
 const router = express.Router();
 
 /**
  * 注销账号需要**二次验证**：
- *  1. 必须是一次**新鲜登录**签发的 token（默认 10 分钟内），旧 token 一律拒绝；
+ *  1. 必须是一次**新鲜登录**签发的 token（10 分钟内），或 5 分钟内刚通过二步验证复核；
  *  2. 还必须把账号名原样输一遍，避免误点。
  *
  * 我们只有 SSO 登录、本地没有密码可校验，所以「再验证一遍账号」的现实做法
- * 就是强制重新走一次登录（拿新 token），再加一道输入框确认。
+ * 就是强制重新走一次登录（拿新 token）或输一次动态码，再加一道输入框确认。
  */
-const REAUTH_WINDOW_MS = 10 * 60 * 1000;
 
 router.delete("/v1/user/delete", async (req, res) => {
   try {
@@ -22,18 +23,40 @@ router.delete("/v1/user/delete", async (req, res) => {
     const db = req.db;
     const uid = new ObjectId(userId);
 
-    // ── 1. 新鲜度校验 ──
-    const iat = Number(req.auth?.iat);
-    if (!Number.isFinite(iat) || Date.now() - iat * 1000 > REAUTH_WINDOW_MS) {
+    // 代登录的影子账号不是一个真账号，注销它没有意义（也防止误操作删掉委托里的身份）
+    if (req.auth?.delegate === true) {
       return res.status(403).json({
         code: 403,
-        msg: "注销需要重新验证账户，请先重新登录后再试",
-        needReauth: true,
+        msg: "这是委托代登录身份，没有可注销的账号。请让委托人撤销委托，或直接退出登录。",
       });
+    }
+
+    // 子账户是主账号创建的从属身份，没有「自杀」权限：
+    //  自己删自己会留下一条没有成员的内部委托，而主账号那边还以为子账户还在，
+    //  且删除后名单里也不会再出现它（无痕消失）。只允许主账号在「组织 → 子账户」里删。
+    if (req.auth?.subAccount === true) {
+      return res.status(403).json({
+        code: 403,
+        msg: "这是子账户，不能自己注销。请让主账号在「组织 → 子账户」里删除它。",
+      });
+    }
+
+    // ── 1. 再验证 ──
+    const reauth = checkReauth(req);
+    if (!reauth.ok) {
+      return rejectReauth(res, "注销需要重新验证账户：请重新登录，或先完成一次二步验证");
     }
 
     const user = await db.collection("user").findOne({ _id: uid });
     if (!user) return res.status(404).json({ code: 404, msg: "账户不存在" });
+
+    // 兜底：令牌里没带 subAccount 声明、但库里是子账户（例如旧令牌）也要拦
+    if (user.isSubAccount === true) {
+      return res.status(403).json({
+        code: 403,
+        msg: "这是子账户，不能自己注销。请让主账号在「组织 → 子账户」里删除它。",
+      });
+    }
 
     // ── 2. 账号名二次确认 ──
     const confirm = String(req.body?.confirm ?? "").trim();
@@ -78,6 +101,19 @@ router.delete("/v1/user/delete", async (req, res) => {
         db.collection("ci_policies").deleteMany({ classId: { $in: classIds } }),
       ] : []),
     ]);
+
+    // 审计留痕：注销是不可撤销操作，必须能回答「谁、什么时候、用什么方式验明身份」
+    await authLog(
+      db,
+      {
+        userId,
+        userName: user.userName,
+        event: "sensitive",
+        success: true,
+        detail: `注销账号（再验证方式：${reauth.via === "mfa" ? "二步验证" : "重新登录"}，班级 ${classIds.length} 个）`,
+      },
+      req,
+    );
 
     log(`[user] 用户 ${userId}（${user.userName}）已通过二次验证并注销，所有数据已清除`, "info", "auth");
     res.json({ code: 0, msg: "账户已注销" });
