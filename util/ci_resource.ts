@@ -11,6 +11,38 @@
 import { ObjectId } from "mongodb";
 import { log } from "./log";
 import { mySchoolIds, getSchoolRole } from "./school";
+import { normalizeClassPlanData, normalizeTimeLayoutData } from "./ci_data";
+import { snapshotDoc } from "./ci_snapshot";
+import {
+  activeGrantsReceived,
+  grantCoversResource,
+  type GrantLite,
+} from "./ci_grant";
+
+/**
+ * 资源数据入库前的兜底规范化。
+ * 只处理「会让客户端反序列化失败」的硬伤（Guid 字段为 null / 数组元素为 null），
+ * 不改其它任何字段 —— 结构上的东西我们不懂语义，一律原样保留。
+ */
+function sanitizeResourceData(collection: string, data: any): any {
+  if (!data || typeof data !== "object") return data;
+  if (collection === "ci_classplans") {
+    const r = normalizeClassPlanData(data);
+    if (r.fixed) {
+      log(
+        `[ci] 课表数据里修正了 ${r.fixed} 处 Guid 为 null 的字段（否则客户端会反序列化失败）`,
+        "warn",
+        "auth",
+      );
+    }
+  } else if (collection === "ci_timelayouts") {
+    const r = normalizeTimeLayoutData(data);
+    if (r.fixed) {
+      log(`[ci] 时间表数据里修正了 ${r.fixed} 处 Guid 为 null 的字段`, "warn", "auth");
+    }
+  }
+  return data;
+}
 
 const RESOURCE_LABELS: Record<string, string> = {
   ci_classplans: "课表",
@@ -36,42 +68,134 @@ function getUserId(req: any): ObjectId | null {
 
 const label = (col: string) => RESOURCE_LABELS[col] || col;
 
-interface Scope {
+export interface Scope {
   userId: ObjectId;
   schoolIds: ObjectId[];
+  /** 别人委托给我的班级授权（IAM 第一阶段） */
+  grants: GrantLite[];
+  /** 受托班级引用的资源 id（可见） */
+  grantResourceIds: ObjectId[];
+  grantResourceSet: Set<string>;
+  /** 其中我有权编辑 / 删除的 */
+  grantEditableSet: Set<string>;
+  grantDeletableSet: Set<string>;
 }
 
-async function scopeOf(req: any): Promise<Scope | null> {
+/**
+ * 算出受托班级连带可见的资源。
+ *
+ * 资源本身没有 classId —— 班级通过 classplanId/timelayoutId/... 反过来引用资源，
+ * 所以要先把「受托班级」引用的资源收集起来，再反查每个资源还被哪些班引用，
+ * 才能判断「改它会不会影响到受托范围外的班」。
+ */
+async function loadGrantScope(db: any, grants: GrantLite[], scope: Scope) {
+  const fields = Object.values(CLASS_REF_FIELD);
+  const classIds = [...new Set(grants.flatMap((g) => g.classIds.map((c) => String(c))))]
+    .map((s) => new ObjectId(s));
+  if (!classIds.length) return;
+
+  const proj: any = { _id: 1 };
+  for (const f of fields) proj[f] = 1;
+
+  const myClasses = await db.collection("ci_classes").find({ _id: { $in: classIds } }).project(proj).toArray();
+  const resIds = new Map<string, ObjectId>();
+  for (const c of myClasses) {
+    for (const f of fields) if (c[f]) resIds.set(String(c[f]), c[f]);
+  }
+  if (!resIds.size) return;
+
+  const refOr = fields.map((f) => ({ [f]: { $in: [...resIds.values()] } }));
+  const refs = await db.collection("ci_classes").find({ $or: refOr }).project(proj).toArray();
+
+  const ownersOf = new Map<string, Set<string>>(); // 资源 id → 引用它的班级 id
+  for (const c of refs) {
+    for (const f of fields) {
+      if (!c[f]) continue;
+      const key = String(c[f]);
+      if (!ownersOf.has(key)) ownersOf.set(key, new Set());
+      ownersOf.get(key)!.add(String(c._id));
+    }
+  }
+
+  for (const [rid, oid] of resIds) {
+    scope.grantResourceIds.push(oid);
+    scope.grantResourceSet.add(rid);
+    const owners = ownersOf.get(rid) || new Set<string>();
+    for (const g of grants) {
+      const mine = new Set(g.classIds.map((c) => String(c)));
+      const inside = [...owners].filter((id) => mine.has(id));
+      if (!inside.length) continue;
+      const allInside = inside.length === owners.size;
+      if (!allInside && !g.allowSharedEdit) continue; // 共享资源默认不给改
+      if (g.caps.includes("resource.edit")) scope.grantEditableSet.add(rid);
+      if (g.caps.includes("resource.delete")) scope.grantDeletableSet.add(rid);
+    }
+  }
+}
+
+export async function scopeOf(req: any): Promise<Scope | null> {
   const userId = getUserId(req);
   if (!userId) return null;
-  return { userId, schoolIds: await mySchoolIds(req.db, userId) };
+  const schoolIds = await mySchoolIds(req.db, userId);
+  const grants = await activeGrantsReceived(req.db, userId);
+  const scope: Scope = {
+    userId,
+    schoolIds,
+    grants,
+    grantResourceIds: [],
+    grantResourceSet: new Set(),
+    grantEditableSet: new Set(),
+    grantDeletableSet: new Set(),
+  };
+  if (grants.length) await loadGrantScope(req.db, grants, scope);
+  return scope;
 }
 
-/** 我能看到的资源：我的 ∪ 我所在学校共享的 */
-function visibleFilter(scope: Scope): any {
-  if (!scope.schoolIds.length) return { userId: scope.userId };
-  return { $or: [{ userId: scope.userId }, { schoolId: { $in: scope.schoolIds } }] };
+/** 我能看到的资源：我的 ∪ 我所在学校共享的 ∪ 受托班级引用的 */
+export function visibleFilter(scope: Scope): any {
+  const or: any[] = [{ userId: scope.userId }];
+  if (scope.schoolIds.length) or.push({ schoolId: { $in: scope.schoolIds } });
+  if (scope.grantResourceIds.length) or.push({ _id: { $in: scope.grantResourceIds } });
+  return or.length === 1 ? or[0] : { $or: or };
 }
 
 /** 单条资源能不能改 */
-async function canWrite(db: any, doc: any, scope: Scope): Promise<{ ok: boolean; reason?: string }> {
+export async function canWrite(
+  db: any,
+  doc: any,
+  scope: Scope,
+  cap: "resource.edit" | "resource.delete" = "resource.edit",
+): Promise<{ ok: boolean; reason?: string }> {
   const isCreator = String(doc.userId) === String(scope.userId);
-  if (!doc.schoolId) {
-    return isCreator ? { ok: true } : { ok: false, reason: "这不是你的资源" };
-  }
-  // 学校共享资源：创建者始终能改自己的东西；学校管理员也能改
-  if (isCreator) return { ok: true };
 
+  if (!doc.schoolId) {
+    if (isCreator) return { ok: true };
+  } else {
+    // 学校共享资源：创建者始终能改自己的东西；学校管理员也能改
+    if (isCreator) return { ok: true };
+    const role = await getSchoolRole(db, doc.schoolId, scope.userId);
+    if (role && role !== "member") return { ok: true };
+    if (!role) {
+      // 可能只是受托账号，落到下面按委托判
+    }
+  }
+
+  // 委托：资源在我受托班级的引用范围内才允许
+  if (scope.grantResourceSet.has(String(doc._id))) {
+    const r = await grantCoversResource(db, scope.grants, doc, CLASS_REF_FIELD, cap);
+    if (r.ok) return { ok: true };
+    return { ok: false, reason: r.reason || "无权修改" };
+  }
+
+  if (!doc.schoolId) return { ok: false, reason: "这不是你的资源" };
   const role = await getSchoolRole(db, doc.schoolId, scope.userId);
   if (!role) return { ok: false, reason: "你不在这所学校里" };
-  if (role === "member") {
-    return {
-      ok: false,
-      reason: "这份资源是其他成员共享给学校的，只有学校管理员或创建者能修改",
-    };
-  }
-  return { ok: true };
+  return {
+    ok: false,
+    reason: "这份资源是其他成员共享给学校的，只有学校管理员或创建者能修改",
+  };
 }
+
 
 /** 我能改的学校 id 集合（owner/admin） */
 async function writableSchoolIds(db: any, scope: Scope): Promise<Set<string>> {
@@ -92,13 +216,21 @@ async function writableSchoolIds(db: any, scope: Scope): Promise<Set<string>> {
 function decorate(doc: any, scope: Scope, writable: Set<string>) {
   const isSchoolLevel = !!doc.schoolId;
   const isMine = String(doc.userId) === String(scope.userId);
+  const key = String(doc._id);
+  const viaGrant = scope.grantResourceSet.has(key);
   return {
     ...doc,
     isSchoolLevel,
     schoolId: doc.schoolId ? String(doc.schoolId) : null,
     isMine,
+    /** 我是通过别人的班级委托看到这份资源的 */
+    viaGrant,
     // 前端据此决定「共享」标签和编辑按钮的可用性
-    editable: isSchoolLevel ? isMine || writable.has(String(doc.schoolId)) : isMine,
+    editable: isSchoolLevel
+      ? isMine || writable.has(String(doc.schoolId)) || scope.grantEditableSet.has(key)
+      : isMine || scope.grantEditableSet.has(key),
+    deletable:
+      isMine || (isSchoolLevel && writable.has(String(doc.schoolId))) || scope.grantDeletableSet.has(key),
   };
 }
 
@@ -160,7 +292,9 @@ export async function create(req: any, res: any, collection: string) {
     _id: new ObjectId(),
     userId,
     name,
-    data: data ?? {},
+    // 兜底：Guid 字段一律不许为 null（`"SubjectId": null` 会让 ClassIsland
+    // 反序列化整个档案时抛异常）。详见 util/ci_data.ts 的说明。
+    data: sanitizeResourceData(collection, data ?? {}),
     version: 1,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -227,7 +361,7 @@ export async function update(req: any, res: any, collection: string) {
   const nextVersion = existing.version + 1;
   const set: any = { updatedAt: new Date(), version: nextVersion };
   if (name !== undefined) set.name = name;
-  if (data !== undefined) set.data = data;
+  if (data !== undefined) set.data = sanitizeResourceData(collection, data);
 
   // 保存历史版本
   await req.db.collection("ci_history").insertOne({
@@ -238,6 +372,16 @@ export async function update(req: any, res: any, collection: string) {
     data: existing.data,
     userId,
     createdAt: new Date(),
+  });
+
+  // 快照：与 ci_history 互为冗余，导入/批量修复等旁路也能在这里查到「改之前」
+  await snapshotDoc({
+    db: req.db,
+    collection,
+    doc: existing,
+    reason: "update",
+    userId,
+    detail: `更新后为 v${nextVersion}`,
   });
 
   await req.db.collection(collection).updateOne(
@@ -325,6 +469,15 @@ export async function restore(req: any, res: any, collection: string) {
     createdAt: new Date(),
   });
 
+  await snapshotDoc({
+    db: req.db,
+    collection,
+    doc: existing,
+    reason: "restore",
+    userId,
+    detail: `回滚到 v${historyDoc.version} 之前`,
+  });
+
   const nextVersion = existing.version + 1;
   await req.db.collection(collection).updateOne(
     { _id: existing._id },
@@ -354,7 +507,7 @@ export async function remove(req: any, res: any, collection: string) {
   });
   if (!doc) return res.status(404).json({ code: 404, msg: `${label(collection)}不存在` });
 
-  const perm = await canWrite(req.db, doc, scope);
+  const perm = await canWrite(req.db, doc, scope, "resource.delete");
   if (!perm.ok) return res.status(403).json({ code: 403, msg: perm.reason || "无权删除" });
 
   // 学校级资源被同校其他班用着时，删掉影响的是别人的班 — 提示改成先取消关联
@@ -393,6 +546,16 @@ export async function remove(req: any, res: any, collection: string) {
       });
     }
   }
+
+  // 删除前存档：删掉的资源不会进 ci_history，只有这里留得住
+  await snapshotDoc({
+    db: req.db,
+    collection,
+    doc,
+    reason: "delete",
+    userId,
+    detail: `删除 v${doc.version ?? "?"}`,
+  });
 
   await req.db.collection(collection).deleteOne({ _id: doc._id });
   log(`[ci] 用户 ${userId} 删除${label(collection)} ${doc.name}`, "info", "auth");

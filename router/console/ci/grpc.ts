@@ -17,56 +17,26 @@ function getUserId(req: any): string | null {
 }
 
 /**
- * 取「当前账号名下的设备 cuid」。
- *
- * ⚠ 不能直接用内存里 clients 的全部 cuid：那是整个进程里所有账号的设备。
- * 以前 /notification 的 all 就是这么写的，等于**能把通知广播到别的学校的机器上**。
- * 这里先按 classId（已固化）和安全标识把范围内的 ci_clients 找出来，
- * 再和内存里的在线表取交集。
+ * 目标作用域统一走 util/grpc_scope（本账号 / 指定设备 / 学校）。
+ * 以前这里是本地实现，而 plugin/deliver 又各自写了一套 —— 结果那套的 all
+ * 是全进程广播。集中一处才不会再漏。
  */
-async function ownCuidSet(req: any): Promise<Set<string>> {
-  const uid = getUserId(req);
-  if (!uid) return new Set();
+import { resolveTargets as resolveScopedTargets } from "../../../util/grpc_scope";
+import type { GrantCap } from "../../../util/ci_grant";
 
-  const db = req.db;
-  const classes = await db
-    .collection("ci_classes")
-    .find({ userId: new ObjectId(uid) })
-    .project({ _id: 1, identity: 1 })
-    .toArray();
-  if (!classes.length) return new Set();
-
-  const classIds = classes.map((c: any) => c._id);
-  const { ids: safeIdentities } = await safeClientIdentities(db, classes);
-
-  const rows = await db
-    .collection("ci_clients")
-    .find({ $or: [{ classId: { $in: classIds } }, { identity: { $in: safeIdentities } }] })
-    .project({ cuid: 1 })
-    .toArray();
-
-  return new Set(rows.map((r: any) => String(r.cuid)));
+async function ownCuidSet(req: any, cap: GrantCap = "device.control"): Promise<Set<string>> {
+  const targets = await resolveScopedTargets(req.db, getUserId(req), { all: true }, cap);
+  return new Set(targets?.allowed ?? []);
 }
 
-/**
- * 把请求里的目标（cuid / cuids / all）收敛到「本账号名下的设备」。
- * all 的语义也必须是「本账号全部在线设备」，而不是全进程所有设备。
- */
 async function resolveTargets(
   req: any,
   body: any,
+  cap: GrantCap = "device.control",
 ): Promise<{ allowed: string[]; rejected: string[] } | null> {
-  const own = await ownCuidSet(req);
-  const { cuid, cuids, all } = body || {};
-  let targets: string[] = [];
-  if (all) targets = [...own];
-  else if (Array.isArray(cuids) && cuids.length) targets = cuids.map(String);
-  else if (cuid) targets = [String(cuid)];
-  else return null;
-  return {
-    allowed: targets.filter((c) => own.has(c)),
-    rejected: targets.filter((c) => !own.has(c)),
-  };
+  const t = await resolveScopedTargets(req.db, getUserId(req), body, cap);
+  if (!t) return null;
+  return { allowed: t.allowed, rejected: t.rejected };
 }
 
 
@@ -134,7 +104,7 @@ router.post("/v1/console/ci/grpc/notification", async (req, res) => {
   };
 
   // 先算出本账号名下的设备，再从中挑目标——绝不广播给全进程
-  const own = await ownCuidSet(req);
+  const own = await ownCuidSet(req, "notify.send");
   let targets: string[] = [];
   if (all) {
     targets = [...own];
@@ -170,7 +140,7 @@ router.post("/v1/console/ci/grpc/data-updated", async (req, res) => {
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
 
-  const targets = await resolveTargets(req, req.body);
+  const targets = await resolveTargets(req, req.body, "device.control");
   if (!targets) return res.status(400).json({ code: 400, msg: "需要指定 cuid / cuids 或 all" });
 
   let sent = 0;
@@ -192,7 +162,7 @@ router.post("/v1/console/ci/grpc/restart", async (req, res) => {
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
 
-  const targets = await resolveTargets(req, req.body);
+  const targets = await resolveTargets(req, req.body, "device.restart");
   if (!targets) return res.status(400).json({ code: 400, msg: "需要指定 cuid / cuids 或 all" });
 
   let sent = 0;
@@ -253,3 +223,4 @@ router.get("/v1/console/ci/clients", async (req, res) => {
 });
 
 export default router;
+

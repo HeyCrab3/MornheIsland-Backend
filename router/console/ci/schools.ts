@@ -54,6 +54,73 @@ function toOid(v: any): ObjectId | null {
   return s && ObjectId.isValid(s) ? new ObjectId(s) : null;
 }
 
+/**
+ * POST /v1/console/ci/schools —— 手动创建学校
+ *
+ * 升级流程只在「同机构 ≥2 个班」时才会出现，但现实里很多情况是：
+ * 学校刚起步只有 1 个班、想先建好学校再挂班、或者机构名没填。
+ * 所以给一个直接创建的入口。规则和其它地方一致：
+ * **绝不因为重名就并入别人的学校** —— 名字被占了就提示走邀请链接。
+ */
+router.post("/v1/console/ci/schools", async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
+
+    const name = String(req.body?.name ?? "").trim();
+    if (!name) return res.status(400).json({ code: 400, msg: "请填写学校名称" });
+    if (name.length > 60) return res.status(400).json({ code: 400, msg: "学校名称最多 60 个字" });
+
+    const db = req.db;
+    const normalizedName = normalizeSchoolName(name) || name.toLowerCase();
+
+    const existing = await db.collection(CI_SCHOOLS).findOne({ normalizedName });
+    if (existing) {
+      const role = await getSchoolRole(db, existing._id, userId);
+      if (role) {
+        return res.status(409).json({
+          code: 409,
+          msg: `你已经在这所学校里了（身份：${role}），直接去学校页面就行`,
+          data: { schoolId: String(existing._id), alreadyMember: true },
+        });
+      }
+      return res.status(409).json({
+        code: 409,
+        msg: `「${existing.name}」已经由其他账号创建。请让该校管理员生成邀请链接，你加入后再挂班级。`,
+        data: { needInvite: true, schoolName: existing.name },
+      });
+    }
+
+    const now = new Date();
+    const school = {
+      _id: new ObjectId(),
+      name,
+      normalizedName,
+      aliases: [],
+      ownerUserId: userId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db.collection(CI_SCHOOLS).insertOne(school);
+    await db.collection(CI_SCHOOL_MEMBERS).insertOne({
+      schoolId: school._id,
+      userId,
+      role: "owner",
+      joinedAt: now,
+    });
+
+    log(`[ci/schools] 用户 ${userId} 手动创建学校「${name}」`, "info", "auth");
+    res.json({
+      code: 0,
+      msg: "ok",
+      data: { schoolId: String(school._id), schoolName: name, role: "owner" },
+    });
+  } catch (e) {
+    log(`[ci/schools/create] ${e}`, "error");
+    res.status(500).json({ code: 500, msg: "内部服务器错误" });
+  }
+});
+
 /** GET /v1/console/ci/schools —— 我加入的学校 */
 router.get("/v1/console/ci/schools", async (req, res) => {
   try {

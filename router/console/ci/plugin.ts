@@ -16,7 +16,8 @@ import { readCipxManifest } from "../../../util/cipx";
 import { resolvePublicBase, resolvePluginSourceUrl } from "../../../util/public_url";
 import { fetchFirstAvailable } from "../../../util/plugin_source";
 import { deliverPlugin, fetchClientPlugins, BOOTSTRAP_PLUGIN_ID } from "../../../grpc/server";
-import { clients, isOnline } from "../../../grpc/clients";
+import { isOnline } from "../../../grpc/clients";
+import { resolveTargets } from "../../../util/grpc_scope";
 import { fetchMarket, resolveMarketPackage } from "./plugin_market";
 import { config } from "../../../config";
 
@@ -374,7 +375,7 @@ router.post("/v1/console/ci/plugin/deliver", async (req, res) => {
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
 
-  const { pluginId, cuid, all } = req.body || {};
+  const { pluginId } = req.body || {};
   if (!pluginId) return res.status(400).json({ code: 400, msg: "缺少 pluginId" });
 
   const doc = await req.db.collection("ci_plugins").findOne({ _id: new ObjectId(pluginId), userId });
@@ -393,17 +394,35 @@ router.post("/v1/console/ci/plugin/deliver", async (req, res) => {
     version: doc.version || "",
   };
 
-  let sent = 0;
-  if (all) {
-    for (const c of clients.keys()) if (deliverPlugin(c, payload)) sent++;
-  } else if (cuid) {
-    if (deliverPlugin(String(cuid), payload)) sent = 1;
-  } else {
-    return res.status(400).json({ code: 400, msg: "需要指定 cuid 或 all" });
+  // ⚠ 原来是 `for (const c of clients.keys()) if (all) ...` —— 那是**全进程广播**，
+  // 等于能给别的学校的机器装插件。统一走 resolveTargets：
+  // all = 本账号设备，schoolId = 该校设备，cuids = 指定且必须在此范围内。
+  const targets = await resolveTargets(req.db, userId, req.body, "device.control");
+  if (!targets) {
+    return res.status(400).json({ code: 400, msg: "需要指定 cuid / cuids / schoolId 或 all" });
+  }
+  if (targets.error) {
+    return res.status(403).json({ code: 403, msg: targets.error });
   }
 
-  log(`[plugin] 用户 ${userId} 下发插件 ${doc.name}，成功 ${sent} 台`, "info", "auth");
-  res.json({ code: 0, msg: "ok", data: { sent, payload } });
+  let sent = 0;
+  const failed: string[] = [];
+  for (const c of targets.allowed) {
+    if (deliverPlugin(c, payload)) sent++;
+    else failed.push(c);
+  }
+
+  log(
+    `[plugin] 用户 ${userId} 下发插件「${doc.name}」：范围 ${targets.scope}，目标 ${targets.allowed.length} 台，成功 ${sent} 台` +
+      (targets.rejected.length ? `，越权/不属于该范围被忽略 ${targets.rejected.length} 台` : ""),
+    "info",
+    "auth",
+  );
+  res.json({
+    code: 0,
+    msg: "ok",
+    data: { sent, total: targets.allowed.length, failed, rejected: targets.rejected, scope: targets.scope, payload },
+  });
 });
 
 /**
@@ -549,3 +568,4 @@ router.post("/v1/console/ci/plugin/dedupe", async (req, res) => {
 });
 
 export default router;
+
