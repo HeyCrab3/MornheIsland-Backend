@@ -15,6 +15,9 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 import { log } from "../../../util/log";
+import { getSchoolRole } from "../../../util/school";
+import { countNullGuids, normalizeClassPlanData, normalizeTimeLayoutData } from "../../../util/ci_data";
+import { snapshotDoc } from "../../../util/ci_snapshot";
 
 const router = express.Router();
 
@@ -244,24 +247,62 @@ async function inspectClass(db: any, cls: any) {
     }
   }
 
+  // ── 6. 课表数据里的 null Guid（会让 ClassIsland 反序列化直接失败）──
+  //
+  // 客户端的 SubjectId 是非空 Guid 且带 GuidEmptyFallbackConverter，
+  // 那个转换器只容忍 ""，遇到 null 会在 GetString() 抛异常 ——
+  // 表现为课表直接爆炸。线上实测 95 份课表里有 28 份中招。
+  const nullGuidCount = countNullGuids(cp.data);
+  if (nullGuidCount > 0) {
+    issues.push({
+      type: "null-guid",
+      level: "error",
+      message:
+        `课表里有 ${nullGuidCount} 处 Guid 字段是 null（空课时最常见），` +
+        `ClassIsland 反序列化时会直接抛异常 —— 客户端课表会崩。可以一键修成 00000000-0000-0000-0000-000000000000`,
+      fixable: true,
+    });
+  }
+
   const fix: any = {};
   if (bestTlDoc && String(cls.timelayoutId ?? "") !== String(bestTlDoc._id)) fix.timelayoutId = bestTlDoc._id;
   if (bestSubDoc && String(cls.subjectsId ?? "") !== String(bestSubDoc._id)) fix.subjectsId = bestSubDoc._id;
 
-  return { issues, fix, cp, bestTlDoc, bestSubDoc };
+  return { issues, fix, cp, bestTlDoc, bestSubDoc, nullGuidCount };
 }
 
-/** GET /v1/console/ci/health/resources —— 体检（只返回有问题的班级） */
+/**
+ * GET /v1/console/ci/health/resources
+ *
+ * `?schoolId=` 时检查**整所学校**的班级（含其他账号的班），
+ * 但只有我自己建的班才给「可自动修复」—— 别人的班我能看能提示，
+ * 不动手改，避免越权改别人的数据。
+ */
 router.get("/v1/console/ci/health/resources", async (req, res) => {
   try {
     const userId = getUserId(req);
     if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
     const db = req.db;
 
+    // 作用域：自己的全部班级，或某所学校的全部班级
+    const rawSchoolId = String(req.query?.schoolId ?? "").trim();
+    let filter: any = { userId };
+    let schoolName = "";
+    if (rawSchoolId) {
+      const schoolId = toOid(rawSchoolId);
+      if (!schoolId) return res.status(400).json({ code: 400, msg: "schoolId 非法" });
+      const role = await getSchoolRole(db, schoolId, userId);
+      if (!role) return res.status(403).json({ code: 403, msg: "你不在这所学校里" });
+      const school = await db.collection("ci_schools").findOne({ _id: schoolId });
+      if (!school) return res.status(404).json({ code: 404, msg: "学校不存在" });
+      schoolName = school.name;
+      filter = { schoolId };
+    }
+
     const classes = await db
       .collection("ci_classes")
-      .find({ userId })
-      .project({ name: 1, identity: 1, classplanId: 1, timelayoutId: 1, subjectsId: 1 })
+      .find(filter)
+      .project({ name: 1, identity: 1, classplanId: 1, timelayoutId: 1, subjectsId: 1, userId: 1 })
       .toArray();
 
     const result: any[] = [];
@@ -269,16 +310,22 @@ router.get("/v1/console/ci/health/resources", async (req, res) => {
     let warnCount = 0;
 
     for (const cls of classes) {
-      const { issues, fix } = await inspectClass(db, cls);
+      const { issues, fix, nullGuidCount } = await inspectClass(db, cls);
       if (!issues.length) continue;
       errorCount += issues.filter((i) => i.level === "error").length;
       warnCount += issues.filter((i) => i.level === "warn").length;
+      const mine = String(cls.userId) === String(userId);
       result.push({
         classId: String(cls._id),
         className: cls.name || "",
         identity: cls.identity || "",
         issues,
-        canFix: !!(fix && (fix.timelayoutId || fix.subjectsId)),
+        mine,
+        // 不是我的班：即使有可修项也不给按钮，后端也会拒。
+        // null Guid 也归"可修" —— 它是格式问题，不是内容问题。
+        canFix:
+          mine &&
+          (nullGuidCount > 0 || !!(fix && (fix.timelayoutId || fix.subjectsId))),
       });
     }
 
@@ -286,12 +333,15 @@ router.get("/v1/console/ci/health/resources", async (req, res) => {
       code: 0,
       msg: "ok",
       data: {
+        schoolId: rawSchoolId || null,
+        schoolName,
         classes: result,
         summary: {
           classCount: classes.length,
           issueClassCount: result.length,
           errorCount,
           warnCount,
+          otherOwnerCount: result.filter((r) => !r.mine).length,
         },
       },
     });
@@ -316,10 +366,52 @@ router.post("/v1/console/ci/health/fix", async (req, res) => {
 
     const db = req.db;
     const cls = await db.collection("ci_classes").findOne({ _id: clsId, userId });
-    if (!cls) return res.status(404).json({ code: 404, msg: "班级不存在" });
+    if (!cls) {
+      // 区分「不存在」和「不是你的班」：学校里能看到别人的班，但只能改自己的
+      const other = await db.collection("ci_classes").findOne({ _id: clsId }, { projection: { name: 1 } });
+      if (other) {
+        return res.status(403).json({
+          code: 403,
+          msg: `「${other.name || "这个班"}」不是你的班级，只能由它的创建者登录后修复`,
+        });
+      }
+      return res.status(404).json({ code: 404, msg: "班级不存在" });
+    }
 
-    const { fix, cp, bestTlDoc, bestSubDoc } = await inspectClass(db, cls);
+    const { fix, cp, bestTlDoc, bestSubDoc, nullGuidCount } = await inspectClass(db, cls);
+
+    // ① null Guid 修复：这是格式问题，优先级最高 —— 不修的话客户端直接崩，
+    //    时间表指向对不对都轮不到它发挥作用。
+    let nullGuidFixed = 0;
+    if (cp && nullGuidCount > 0) {
+      // 先留档再改：normalizeClassPlanData 是就地修改 cp.data 的
+      await snapshotDoc({
+        db,
+        collection: "ci_classplans",
+        doc: cp,
+        reason: "health-fix",
+        userId,
+        detail: `体检修复 ${nullGuidCount} 处 null Guid 之前`,
+      });
+      const r = normalizeClassPlanData(cp.data);
+      nullGuidFixed = r.fixed;
+      if (r.fixed) {
+        await db.collection("ci_classplans").updateOne(
+          { _id: cp._id },
+          { $set: { data: cp.data, updatedAt: new Date() } },
+        );
+      }
+    }
+
     if (!fix || (!fix.timelayoutId && !fix.subjectsId)) {
+      if (nullGuidFixed) {
+        log(`[ci/health] 用户 ${userId} 修复班级「${cls.name || clsId}」的 ${nullGuidFixed} 处 null Guid`, "info", "auth");
+        return res.json({
+          code: 0,
+          msg: "ok",
+          data: { fixed: ["nullGuid"], nullGuidFixed },
+        });
+      }
       return res.json({ code: 0, msg: "ok", data: { fixed: [], message: "没有可自动修复的项" } });
     }
 
@@ -343,13 +435,118 @@ router.post("/v1/console/ci/health/fix", async (req, res) => {
     const fixed = Object.keys(fix);
     log(
       `[ci/health] 用户 ${userId} 修复班级「${cls.name || clsId}」：${fixed.join(", ")}` +
+        `${nullGuidFixed ? `，另修 ${nullGuidFixed} 处 null Guid` : ""}` +
         `（目标时间表 ${bestTlDoc?._id ?? "-"} / 科目 ${bestSubDoc?._id ?? "-"}）`,
       "info",
       "auth",
     );
-    res.json({ code: 0, msg: "ok", data: { fixed } });
+    res.json({ code: 0, msg: "ok", data: { fixed, nullGuidFixed } });
   } catch (e) {
     log(`[ci/health/fix] ${e}`, "error");
+    res.status(500).json({ code: 500, msg: "内部服务器错误" });
+  }
+});
+
+/**
+ * POST /v1/console/ci/health/fix-null-guid
+ *
+ * 批量修我名下**所有**课表资源里的 null Guid。
+ *
+ * 为什么单独一个接口：档案体检是按「班级」遍历的，而没有挂到任何班级上的
+ * 孤儿课表资源不会出现在体检结果里。线上实测 95 份课表里有 28 份中招，
+ * 其中不少就是这类孤儿资源，用户根本看不到它们有问题。
+ *
+ * 只动 `userId = 我` 的资源；学校共享且不是我创建的一律不碰。
+ * 幂等：修过的再跑就是 0。
+ */
+router.post("/v1/console/ci/health/fix-null-guid", async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
+    const db = req.db;
+
+    const docs = await db
+      .collection("ci_classplans")
+      .find({ userId })
+      .project({ name: 1, data: 1 })
+      .toArray();
+
+    let fixedDocs = 0;
+    let fixedFields = 0;
+    const details: any[] = [];
+
+    for (const doc of docs) {
+      const before = countNullGuids(doc.data);
+      if (!before) continue;
+      await snapshotDoc({
+        db,
+        collection: "ci_classplans",
+        doc,
+        reason: "health-fix",
+        userId,
+        detail: `批量修复 ${before} 处 null Guid 之前`,
+      });
+      const r = normalizeClassPlanData(doc.data);
+      if (!r.fixed) continue;
+      await db.collection("ci_classplans").updateOne(
+        { _id: doc._id },
+        { $set: { data: doc.data, updatedAt: new Date() } },
+      );
+      fixedDocs++;
+      fixedFields += r.fixed;
+      details.push({ id: String(doc._id), name: doc.name || "", fixed: r.fixed, remaining: r.remaining });
+    }
+
+    // 时间表那边也顺手过一遍（DefaultClassId 为 null 的情况）
+    const tlDocs = await db
+      .collection("ci_timelayouts")
+      .find({ userId })
+      .project({ name: 1, data: 1 })
+      .toArray();
+    let fixedTlDocs = 0;
+    for (const doc of tlDocs) {
+      const before = countNullGuids(doc.data);
+      if (!before) continue;
+      await snapshotDoc({
+        db,
+        collection: "ci_timelayouts",
+        doc,
+        reason: "health-fix",
+        userId,
+        detail: `批量修复 ${before} 处 null Guid 之前`,
+      });
+      const r = normalizeTimeLayoutData(doc.data);
+      if (!r.fixed) continue;
+      await db.collection("ci_timelayouts").updateOne(
+        { _id: doc._id },
+        { $set: { data: doc.data, updatedAt: new Date() } },
+      );
+      fixedTlDocs++;
+      fixedFields += r.fixed;
+    }
+
+    if (fixedDocs || fixedTlDocs) {
+      log(
+        `[ci/health] 用户 ${userId} 批量修复 null Guid：课表 ${fixedDocs} 份（${fixedFields} 处）、时间表 ${fixedTlDocs} 份`,
+        "info",
+        "auth",
+      );
+    }
+
+    res.json({
+      code: 0,
+      msg: "ok",
+      data: {
+        scannedClassPlans: docs.length,
+        scannedTimeLayouts: tlDocs.length,
+        fixedClassPlans: fixedDocs,
+        fixedTimeLayouts: fixedTlDocs,
+        fixedFields,
+        details: details.slice(0, 50),
+      },
+    });
+  } catch (e) {
+    log(`[ci/health/fix-null-guid] ${e}`, "error");
     res.status(500).json({ code: 500, msg: "内部服务器错误" });
   }
 });

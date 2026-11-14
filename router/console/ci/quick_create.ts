@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import { log } from "../../../util/log.ts";
 import { getOcrResult } from "../../../util/ocr_service.ts";
 import { chat } from "../../../util/llm.ts";
+import { EMPTY_GUID } from "../../../util/ci_data.ts";
 
 const router = express.Router();
 
@@ -145,7 +146,7 @@ router.post("/v1/console/ci/quick-create", async (req, res) => {
           },
           Classes: slots.map((s: any) => s?.subject
             ? { SubjectId: s.subject, IsChangedClass: false, IsEnabled: true, AttachedObjects: {}, IsActive: false }
-            : { SubjectId: null, IsChangedClass: false, IsEnabled: false, AttachedObjects: {}, IsActive: false }
+            : { SubjectId: EMPTY_GUID, IsChangedClass: false, IsEnabled: false, AttachedObjects: {}, IsActive: false }
           ),
           Name: day,
           IsOverlay: false,

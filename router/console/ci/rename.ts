@@ -10,6 +10,7 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 import { log } from "../../../util/log";
+import { snapshotDoc } from "../../../util/ci_snapshot";
 
 const router = express.Router();
 
@@ -65,7 +66,15 @@ router.post("/v1/console/ci/:type/:id/rename", async (req, res) => {
       return res.status(409).json({ code: 409, msg: `已存在同名的${meta.label}：${name}` });
     }
 
-    // 只改 name：不动 version、不写历史版本
+    // 只改 name：不动 version、不写历史版本（但留一份快照，改错名能查回来）
+    await snapshotDoc({
+      db: req.db,
+      collection: meta.collection,
+      doc: existing,
+      reason: "rename",
+      userId,
+      detail: `改名为「${name}」之前`,
+    });
     await col.updateOne({ _id: existing._id }, { $set: { name, updatedAt: new Date() } });
     log(`[ci] 用户 ${userId} 重命名${meta.label}：「${existing.name}」→「${name}」`, "info", "auth");
     res.json({ code: 0, msg: "ok", data: { name, changed: true } });

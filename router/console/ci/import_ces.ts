@@ -1,6 +1,7 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 import { log } from "../../../util/log";
+import { EMPTY_GUID } from "../../../util/ci_data";
 // import { v4 as uuidv4 } from "uuid";
 
 const router = express.Router();
@@ -136,10 +137,10 @@ router.post("/v1/console/ci/import/ces", async (req, res) => {
           const subUuid = resolveSubjectUuid(match.subject, subjectUuidMap, subjectsData);
           classes.push(subUuid
             ? { SubjectId: subUuid, IsChangedClass: false, IsEnabled: true, AttachedObjects: {}, IsActive: false }
-            : { SubjectId: null, IsChangedClass: false, IsEnabled: false, AttachedObjects: {}, IsActive: false }
+            : { SubjectId: EMPTY_GUID, IsChangedClass: false, IsEnabled: false, AttachedObjects: {}, IsActive: false }
           );
         } else {
-          classes.push({ SubjectId: null, IsChangedClass: false, IsEnabled: false, AttachedObjects: {}, IsActive: false });
+          classes.push({ SubjectId: EMPTY_GUID, IsChangedClass: false, IsEnabled: false, AttachedObjects: {}, IsActive: false });
         }
       }
 
