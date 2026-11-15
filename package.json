@@ -6,6 +6,7 @@
   "main": "index.ts",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "test:bootstrap": "node --experimental-vm-modules --test tests/bootstrap.test.mjs",
     "dev": "tsx watch server.ts",
     "start": "tsx server.ts",
     "build": "tsc -w"
