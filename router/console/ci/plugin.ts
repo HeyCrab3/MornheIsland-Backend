@@ -28,17 +28,6 @@ function ensureDir() {
   if (!existsSync(PLUGINS_DIR)) mkdirSync(PLUGINS_DIR, { recursive: true });
 }
 
-/** 系统级单例设置集合（引导插件地址等，非用户资源） */
-const SYSTEM_SETTINGS = "ci_system_settings";
-
-/** 引导插件下载地址：优先取数据库覆盖值，否则回落到 config */
-async function resolveBootstrapUrl(db: any): Promise<{ url: string; isDefault: boolean }> {
-  const fallback = config.bootstrap_plugin_url || "";
-  const doc = await db.collection(SYSTEM_SETTINGS).findOne({ _id: "bootstrap_plugin_url" as any });
-  const saved = typeof doc?.value === "string" ? doc.value.trim() : "";
-  return { url: saved || fallback, isDefault: !saved };
-}
-
 function getUserId(req: any): ObjectId | null {
   const uid = req.auth?.userId;
   return uid ? new ObjectId(uid) : null;
@@ -435,34 +424,10 @@ router.post("/v1/console/ci/plugin/deliver", async (req, res) => {
 router.get("/v1/console/ci/plugin/bootstrap", async (req, res) => {
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
-  const { url, isDefault } = await resolveBootstrapUrl(req.db);
-  res.json({ code: 0, msg: "ok", data: { url, isDefault } });
-});
-
-/** PUT /v1/console/ci/plugin/bootstrap — 覆盖引导插件地址 */
-router.put("/v1/console/ci/plugin/bootstrap", async (req, res) => {
-  const userId = getUserId(req);
-  if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
-
-  const url = String(req.body?.url ?? "").trim();
-  // 传空字符串表示恢复默认
-  if (url && !/^https?:\/\//i.test(url)) {
-    return res.status(400).json({ code: 400, msg: "地址必须以 http:// 或 https:// 开头" });
-  }
-
-  if (!url) {
-    await req.db.collection(SYSTEM_SETTINGS).deleteOne({ _id: "bootstrap_plugin_url" as any });
-    const fallback = config.bootstrap_plugin_url || "";
-    return res.json({ code: 0, msg: "已恢复默认地址", data: { url: fallback, isDefault: true } });
-  }
-
-  await req.db.collection(SYSTEM_SETTINGS).updateOne(
-    { _id: "bootstrap_plugin_url" as any },
-    { $set: { value: url, updatedAt: new Date(), updatedBy: userId } },
-    { upsert: true },
-  );
-  log(`[plugin] 用户 ${userId} 更新引导插件地址 → ${url}`, "info", "auth");
-  res.json({ code: 0, msg: "ok", data: { url, isDefault: false } });
+  // 旧数据库覆盖值可由任意登录用户写入，不能再作为下载来源。
+  // 仅信任部署配置；保留旧记录供维护者核查，不在读取时修改数据库。
+  const url = config.bootstrap_plugin_url || "";
+  res.json({ code: 0, msg: "ok", data: { url, isDefault: true } });
 });
 
 /**
