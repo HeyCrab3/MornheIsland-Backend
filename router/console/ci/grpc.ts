@@ -7,7 +7,7 @@ import { ObjectId } from "mongodb";
 import { listClients, clients, isOnline } from "../../../grpc/clients";
 import { sendNotification, sendDataUpdated, sendRestartApp, isGrpcListening, getGrpcPort, isGrpcTlsEnabled } from "../../../grpc/server";
 import { log } from "../../../util/log";
-import { safeClientIdentities } from "../../../util/ci_public";
+import { findClass } from "../../../util/ci_public";
 import { config } from "../../../config";
 
 const router = express.Router();
@@ -22,7 +22,7 @@ function getUserId(req: any): string | null {
  * 是全进程广播。集中一处才不会再漏。
  */
 import { resolveTargets as resolveScopedTargets } from "../../../util/grpc_scope";
-import type { GrantCap } from "../../../util/ci_grant";
+import { DEVICE_CAPS, grantedClassIds, type GrantCap } from "../../../util/ci_grant";
 
 async function ownCuidSet(req: any, cap: GrantCap = "device.control"): Promise<Set<string>> {
   const targets = await resolveScopedTargets(req.db, getUserId(req), { all: true }, cap);
@@ -71,11 +71,48 @@ router.get("/v1/console/ci/grpc/endpoint", (req, res) => {
   });
 });
 
-/** GET /v1/console/ci/grpc/clients — 已注册的 gRPC 客户端 */
-router.get("/v1/console/ci/grpc/clients", (req, res) => {
+/** GET /v1/console/ci/grpc/clients — 本账号及有效设备委托范围内已注册的客户端 */
+router.get("/v1/console/ci/grpc/clients", async (req, res) => {
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ code: 401, msg: "请先登录" });
-  res.json({ code: 0, msg: "ok", data: listClients() });
+
+  try {
+    const granted = await grantedClassIds(req.db, userId, DEVICE_CAPS);
+    const classes = await req.db.collection("ci_classes")
+      .find({ $or: [{ userId: new ObjectId(userId) }, { _id: { $in: granted } }] })
+      .project({ _id: 1 }).toArray();
+    const allowed = new Set(classes.map((c) => String(c._id)));
+    if (!allowed.size) return res.json({ code: 0, msg: "ok", data: [] });
+
+    const registered = listClients();
+    const docs = await req.db.collection("ci_clients")
+      .find({ cuid: { $in: registered.map((c) => c.cuid) } })
+      .project({ cuid: 1, classId: 1, identity: 1 }).toArray();
+    const byCuid = new Map(docs.map((d) => [d.cuid, d]));
+    const resolved = new Map<string, boolean>();
+    const data = [];
+    for (const entry of registered) {
+      const doc = byCuid.get(entry.cuid);
+      const classId = String(doc?.classId ?? "");
+      // 固定绑定优先；不能因旧 identity 恰好匹配本账号就越过别人的绑定。
+      if (classId) {
+        if (allowed.has(classId)) data.push(entry);
+        continue;
+      }
+      // 新注册可能尚未持久化；重连时内存标识可能为空。沿用公共解析器，
+      // ObjectId 优先，旧 identity 只有全库唯一时才接受，不猜测同名班级。
+      const identity = entry.clientId || doc?.identity || "";
+      if (!resolved.has(identity)) {
+        const cls = await findClass(req.db, identity);
+        resolved.set(identity, !!cls && allowed.has(String(cls._id)));
+      }
+      if (resolved.get(identity)) data.push(entry);
+    }
+    res.json({ code: 0, msg: "ok", data });
+  } catch (e) {
+    log(`[grpc/clients] ${e}`, "error", "grpc");
+    res.status(500).json({ code: 500, msg: "内部服务器错误" });
+  }
 });
 
 /** POST /v1/console/ci/grpc/notification — 推送大屏通知（支持单个 / 批量 / 本账号全部） */
