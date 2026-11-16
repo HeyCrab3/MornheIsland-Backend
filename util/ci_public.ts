@@ -14,6 +14,16 @@
  */
 import { ObjectId } from "mongodb";
 import { log } from "./log";
+import { scopeOf, validateResourceReferences } from "./ci_resource";
+
+/** Recheck persisted references as the class owner, never as an anonymous caller. */
+async function accessibleClass(db: any, cls: any) {
+  if (!["classplanId", "timelayoutId", "subjectsId", "settingsId", "policyId"].some((field) => cls[field])) return cls;
+  const scope = await scopeOf({ db, auth: { userId: cls.userId } });
+  if (!scope) return null;
+  const refs = await validateResourceReferences(db, scope, cls, true);
+  return refs.ok ? cls : null;
+}
 
 /** 某班级标识在全库出现几次，供调用方区分「不存在」和「有歧义」 */
 export async function countClassesByIdentity(db: any, classIdentity: string): Promise<number> {
@@ -27,13 +37,13 @@ export async function findClass(db: any, classIdentity: string) {
   // 1) 按 ObjectId 精确查找
   if (ObjectId.isValid(key)) {
     const cls = await db.collection("ci_classes").findOne({ _id: new ObjectId(key) });
-    if (cls) return cls;
+    if (cls) return accessibleClass(db, cls);
     // 24 位 hex 也可能恰好是某个班级的 identity，继续走下面的兜底
   }
 
   // 2) 旧式班级标识：必须全局唯一才接受
   const matches = await db.collection("ci_classes").find({ identity: key }).limit(2).toArray();
-  if (matches.length === 1) return matches[0];
+  if (matches.length === 1) return accessibleClass(db, matches[0]);
   if (matches.length > 1) {
     log(
       `[ci] 拒绝按班级标识解析：identity="${key}" 在多个账号下重复，无法确定归属（可能是跨校串数据）`,

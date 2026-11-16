@@ -159,6 +159,39 @@ export function visibleFilter(scope: Scope): any {
   return or.length === 1 ? or[0] : { $or: or };
 }
 
+/** Validate references before storing them, including a classplan's indirect refs. */
+export async function validateResourceReferences(
+  db: any,
+  scope: Scope,
+  refs: any,
+  allowMissing = false,
+): Promise<{ ok: true } | { ok: false; status: number; msg: string }> {
+  for (const [collection, field] of Object.entries(CLASS_REF_FIELD)) {
+    const raw = refs?.[field];
+    // Omitted fields are unchanged; null/empty explicitly clear a reference.
+    if (raw === undefined || raw === null || raw === "") continue;
+    if (!ObjectId.isValid(String(raw))) {
+      return { ok: false, status: 400, msg: `${field} 非法` };
+    }
+    const _id = new ObjectId(String(raw));
+    const doc = await db.collection(collection).findOne({ _id, ...visibleFilter(scope) });
+    if (!doc) {
+      // Public downloads retain their existing missing-resource fallback, but
+      // an existing resource outside the class owner's scope must fail closed.
+      if (allowMissing && !await db.collection(collection).findOne({ _id }, { projection: { _id: 1 } })) continue;
+      return { ok: false, status: 403, msg: "关联资源不存在或无权访问" };
+    }
+    if (collection === "ci_classplans") {
+      const nested = await validateResourceReferences(db, scope, {
+        timelayoutId: doc.data?.timelayoutId,
+        subjectsId: doc.data?.subjectsId,
+      }, allowMissing);
+      if (!nested.ok) return nested;
+    }
+  }
+  return { ok: true };
+}
+
 /** 单条资源能不能改 */
 export async function canWrite(
   db: any,
@@ -273,8 +306,12 @@ export async function create(req: any, res: any, collection: string) {
   if (!name) return res.status(400).json({ code: 400, msg: "name 为必填项" });
 
   // 课表创建时如果传了 data 就必须带 timelayoutId
-  if (collection === "ci_classplans" && data !== undefined && !data.timelayoutId) {
+  if (collection === "ci_classplans" && data !== undefined && !data?.timelayoutId) {
     return res.status(400).json({ code: 400, msg: "课表必须关联一个时间表" });
+  }
+  if (collection === "ci_classplans" && data !== undefined) {
+    const refs = await validateResourceReferences(req.db, scope, data);
+    if (!refs.ok) return res.status(refs.status).json({ code: refs.status, msg: refs.msg });
   }
 
   // 直接创建成学校级资源：必须是该校成员，否则等于往别人学校塞东西
@@ -354,8 +391,12 @@ export async function update(req: any, res: any, collection: string) {
   if (!perm.ok) return res.status(403).json({ code: 403, msg: perm.reason || "无权修改" });
 
   // 课表必须绑定时间表
-  if (collection === "ci_classplans" && data && !data.timelayoutId) {
+  if (collection === "ci_classplans" && data !== undefined && !data?.timelayoutId) {
     return res.status(400).json({ code: 400, msg: "课表必须关联一个时间表" });
+  }
+  if (collection === "ci_classplans" && data !== undefined) {
+    const refs = await validateResourceReferences(req.db, scope, data);
+    if (!refs.ok) return res.status(refs.status).json({ code: refs.status, msg: refs.msg });
   }
 
   const nextVersion = existing.version + 1;
@@ -457,6 +498,11 @@ export async function restore(req: any, res: any, collection: string) {
     version: parseInt(req.params.version),
   });
   if (!historyDoc) return res.status(404).json({ code: 404, msg: "版本不存在" });
+
+  if (collection === "ci_classplans") {
+    const refs = await validateResourceReferences(req.db, scope, historyDoc.data);
+    if (!refs.ok) return res.status(refs.status).json({ code: refs.status, msg: refs.msg });
+  }
 
   // 把当前版本也存进历史
   await req.db.collection("ci_history").insertOne({
