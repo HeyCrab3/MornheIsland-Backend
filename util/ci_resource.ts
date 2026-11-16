@@ -534,14 +534,19 @@ export async function remove(req: any, res: any, collection: string) {
     });
   }
 
-  // 时间表额外检查课表引用
-  if (collection === "ci_timelayouts") {
-    const usedByCp = await findReferencingClassplans(req.db, doc._id);
+  // 时间表和科目都可能仅由课表内部引用，不能只检查班级的直接关联。
+  if (collection === "ci_timelayouts" || collection === "ci_subjects") {
+    const usedByCp = collection === "ci_timelayouts"
+      ? await findReferencingClassplans(req.db, doc._id)
+      : await req.db.collection("ci_classplans")
+          .find({ "data.subjectsId": doc._id.toString() })
+          .project({ name: 1 })
+          .toArray();
     if (usedByCp.length > 0) {
       const names = usedByCp.map((c: any) => c.name).join("、");
       return res.status(409).json({
         code: 409,
-        msg: `无法删除：以下课表引用了此时间表：${names}。请先修改课表后再试。`,
+        msg: `无法删除：以下课表引用了此${label(collection)}：${names}。请先修改课表后再试。`,
         data: { usedBy: usedByCp },
       });
     }
