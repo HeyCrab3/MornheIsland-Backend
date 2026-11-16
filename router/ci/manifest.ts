@@ -16,13 +16,17 @@ router.get("/v1/ci/:classIdentity/manifest.json", async (req, res) => {
     const cls = await findClass(db, req.params.classIdentity);
     if (!cls) return res.status(404).json({ code: 404, msg: "班级不存在" });
 
-    const [classplan, timelayout, subjects, settings, policy] = await Promise.all([
-      loadRef(db, cls.classplanId, "ci_classplans"),
-      loadRef(db, cls.timelayoutId, "ci_timelayouts"),
-      loadRef(db, cls.subjectsId, "ci_subjects"),
+    const classplan = await loadRef(db, cls.classplanId, "ci_classplans");
+    const [timelayout, preferredSubjects, settings, policy] = await Promise.all([
+      loadRef(db, classplan?.data?.timelayoutId || cls.timelayoutId, "ci_timelayouts"),
+      loadRef(db, classplan?.data?.subjectsId || cls.subjectsId, "ci_subjects"),
       loadRef(db, cls.settingsId, "ci_settings"),
       loadRef(db, cls.policyId, "ci_policies"),
     ]);
+
+    const subjects = preferredSubjects || (classplan?.data?.subjectsId
+      ? await loadRef(db, cls.subjectsId, "ci_subjects")
+      : null);
 
     const baseUrl = `${req.protocol}://${req.get("host")}/v1/ci/${String(cls._id)}`;
 
