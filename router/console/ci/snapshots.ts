@@ -7,7 +7,7 @@
  */
 import express from "express";
 import { ObjectId } from "mongodb";
-import { scopeOf, visibleFilter, canWrite } from "../../../util/ci_resource";
+import { scopeOf, visibleFilter, canWrite, validateResourceReferences } from "../../../util/ci_resource";
 import {
   CI_SNAPSHOTS,
   getSnapshot,
@@ -187,6 +187,11 @@ for (const [type, collection] of Object.entries(COLLECTION)) {
     const perm = await snapshotPermission(req.db, scope, liveNow, snap);
     if (!perm.ok) return res.status(404).json({ code: 404, msg: "快照不存在" });
     if (!perm.writable) return res.status(403).json({ code: 403, msg: perm.reason || "无权恢复" });
+
+    if (collection === "ci_classplans") {
+      const refs = await validateResourceReferences(req.db, scope, snap.data);
+      if (!refs.ok) return res.status(refs.status).json({ code: refs.status, msg: refs.msg });
+    }
 
     const live = await req.db.collection(collection).findOne({ _id: resourceId });
 

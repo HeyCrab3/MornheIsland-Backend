@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import { log } from "../../../util/log";
 import { getSchoolRole } from "../../../util/school";
 import { grantedClassIdsAny } from "../../../util/ci_grant";
+import { scopeOf, validateResourceReferences } from "../../../util/ci_resource";
 
 const router = express.Router();
 
@@ -43,6 +44,11 @@ router.post("/v1/console/ci/class", async (req, res) => {
 
     const school = await resolveSchoolId(db, userId, schoolId);
     if (!school.ok) return res.status(403).json({ code: 403, msg: school.msg });
+
+    const scope = await scopeOf(req);
+    if (!scope) return res.status(401).json({ code: 401, msg: "请先登录" });
+    const refs = await validateResourceReferences(db, scope, { classplanId, timelayoutId, subjectsId, settingsId, policyId });
+    if (!refs.ok) return res.status(refs.status).json({ code: refs.status, msg: refs.msg });
 
     const toRef = (id: string | undefined) => (id ? new ObjectId(id) : null);
 
@@ -187,6 +193,10 @@ router.put("/v1/console/ci/class/:id", async (req, res) => {
     if (!school.ok) return res.status(403).json({ code: 403, msg: school.msg });
 
     const set: any = { updatedAt: new Date() };
+    const scope = await scopeOf(req);
+    if (!scope) return res.status(401).json({ code: 401, msg: "请先登录" });
+    const refs = await validateResourceReferences(db, scope, { classplanId, timelayoutId, subjectsId, settingsId, policyId });
+    if (!refs.ok) return res.status(refs.status).json({ code: refs.status, msg: refs.msg });
     if (name !== undefined) set.name = name;
     if (orgName !== undefined) set.orgName = orgName;
     if (classplanId !== undefined) set.classplanId = toRef(classplanId);
